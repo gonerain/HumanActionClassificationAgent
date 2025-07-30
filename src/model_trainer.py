@@ -6,6 +6,7 @@ import numpy as np
 import torch
 from torch import nn
 from torch.utils.data import Dataset, DataLoader
+from tqdm import tqdm
 
 
 class SkeletonDataset(Dataset):
@@ -32,9 +33,14 @@ def load_dataset(data_dir: str, split: float = 0.8):
 
 
 class LSTMClassifier(nn.Module):
-    def __init__(self, input_size: int = 99, hidden_size: int = 128, num_classes: int = 2):
+    def __init__(self, input_size: int = 99, hidden_size: int = 128, num_classes: int = 2, num_layers: int = 1):
         super().__init__()
-        self.lstm = nn.LSTM(input_size, hidden_size, batch_first=True)
+        self.lstm = nn.LSTM(
+            input_size,
+            hidden_size,
+            num_layers=num_layers,
+            batch_first=True,
+        )
         self.fc = nn.Linear(hidden_size, num_classes)
 
     def forward(self, x):
@@ -46,21 +52,25 @@ class LSTMClassifier(nn.Module):
 
 def train(data_dir: str, epochs: int = 20, batch_size: int = 8, lr: float = 1e-3):
     train_files, val_files = load_dataset(data_dir)
-    train_loader = DataLoader(SkeletonDataset(train_files), batch_size=batch_size, shuffle=True)
+    train_loader = DataLoader(
+        SkeletonDataset(train_files), batch_size=batch_size, shuffle=True
+    )
     val_loader = DataLoader(SkeletonDataset(val_files), batch_size=batch_size)
 
     sample = np.load(train_files[0])["data"]
     input_size = sample.shape[-1] * sample.shape[-2]
 
-    model = LSTMClassifier(input_size=input_size)
+    device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
+    model = LSTMClassifier(input_size=input_size).to(device)
     optimizer = torch.optim.Adam(model.parameters(), lr=lr)
     criterion = nn.CrossEntropyLoss()
 
     for epoch in range(epochs):
         model.train()
         total_loss = 0.0
-        for seq, label in train_loader:
-            seq = seq.view(seq.size(0), seq.size(1), -1)
+        for seq, label in tqdm(train_loader, desc=f"Epoch {epoch+1}/{epochs}"):
+            seq = seq.view(seq.size(0), seq.size(1), -1).to(device)
+            label = label.long().to(device)
             optimizer.zero_grad()
             output = model(seq)
             loss = criterion(output, label)
@@ -74,7 +84,8 @@ def train(data_dir: str, epochs: int = 20, batch_size: int = 8, lr: float = 1e-3
         total = 0
         with torch.no_grad():
             for seq, label in val_loader:
-                seq = seq.view(seq.size(0), seq.size(1), -1)
+                seq = seq.view(seq.size(0), seq.size(1), -1).to(device)
+                label = label.long().to(device)
                 output = model(seq)
                 pred = output.argmax(dim=1)
                 correct += (pred == label).sum().item()

@@ -34,6 +34,8 @@ PY
 python src/model_trainer.py dataset --epochs 30 --batch_size 16
 ```
 
+脚本会自动检测是否存在可用的 GPU，并在训练过程中使用 `tqdm` 显示进度条。
+
 训练结束后会在 `weights/` 目录下生成 `model.pt`，可用于后续推理。
 
 ## 多人场景的处理思路
