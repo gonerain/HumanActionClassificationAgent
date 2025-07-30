@@ -45,6 +45,7 @@ class DataPipeline:
         label: int,
         output_dir: str,
         window_size: int = 30,
+        debug: bool = False,
     ) -> List[str]:
         """Extract pose sequences from video and save them.
 
@@ -98,6 +99,25 @@ class DataPipeline:
                         saved_files.append(file_path)
                         sequences[int(obj_id)] = []
 
+            if debug:
+                vis = frame.copy()
+                if ids is not None:
+                    for box, obj_id in zip(boxes.xyxy, ids):
+                        x1, y1, x2, y2 = map(int, box.tolist())
+                        cv2.rectangle(vis, (x1, y1), (x2, y2), (0, 255, 0), 2)
+                        cv2.putText(
+                            vis,
+                            str(int(obj_id)),
+                            (x1, max(0, y1 - 10)),
+                            cv2.FONT_HERSHEY_SIMPLEX,
+                            0.5,
+                            (0, 255, 0),
+                            2,
+                        )
+                cv2.imshow("debug", vis)
+                if cv2.waitKey(1) & 0xFF == ord("q"):
+                    break
+
             # update missing counters for ids not detected this frame
             for obj_id in list(sequences.keys()):
                 if obj_id not in current_ids:
@@ -119,4 +139,6 @@ class DataPipeline:
 
             frame_idx += 1
         cap.release()
+        if debug:
+            cv2.destroyAllWindows()
         return saved_files
