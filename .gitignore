@@ -3,3 +3,4 @@ pose_sequences/
 __pycache__/
 .vscode
 *.pt
+weights/

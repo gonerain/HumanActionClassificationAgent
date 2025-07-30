@@ -50,3 +50,19 @@ python src/model_trainer.py dataset --epochs 30 --batch_size 16 --patience 5
 - YOLO 在每帧检测所有人体并分配 ID，`DataPipeline` 会为每个 ID 独立缓存序列。
 - 当某个 ID 在一定帧数内消失时，其缓存会被清理，以节省内存并防止混淆。
 - 这样即使画面中出现多个人，也能分别判断谁在工作、谁只是路过。
+
+## 部署与实时推理
+
+部署脚本位于 `src/inference.py`，加载训练好的模型后即可对新视频或摄像头画面进行动作识别。示例：
+
+```bash
+python - <<'PY'
+from src.inference import ActionInference
+# 加载权重并启动推理，默认每 30 帧判断一次
+predictor = ActionInference('weights/model.pt')
+# 对 camera 或视频文件执行推理，按 q 退出
+predictor.run(0, debug=True)
+PY
+```
+
+脚本会在窗口中标注每个目标的 ID 和预测的动作类别。当目标长时间消失，其缓存序列会被清理。
