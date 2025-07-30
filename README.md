@@ -9,7 +9,7 @@
 
 依赖：`ultralytics`、`mediapipe`、`opencv-python`。
 
-示例代码位于 `src/data_pipeline.py`，使用方法：
+示例代码位于 `src/data_pipeline.py`，可以自动将视频切片为固定长度的骨骼序列，便于逐段标注：
 
 ```bash
 python -m pip install ultralytics mediapipe opencv-python
@@ -22,7 +22,7 @@ pipeline.process_video('video.mp4', label=1, output_dir='dataset')
 PY
 ```
 
-该模块会在检测到多人时分别计算每个人的姿态，并在对象离开画面一定时间后自动清理缓存，避免长期占用内存。每获得固定长度的骨骼序列后保存为 `npz` 文件，文件中包含 `data` 和 `label` 两个字段。
+该模块会在检测到多人时分别计算每个人的姿态，并在对象离开画面一定时间后自动清理缓存，避免长期占用内存。每累积 `N` 帧（默认 30 帧）便保存一个 `npz` 文件，形状为 `(N, 33, 3)`，文件名包含视频名、对象 ID 与起始帧号，便于人工逐段标注。
 
 ## 模型训练
 

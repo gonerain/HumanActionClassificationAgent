@@ -88,10 +88,11 @@ class DataPipeline:
                     seq.append(pose)
                     missing[int(obj_id)] = 0
                     if len(seq) >= window_size:
+                        start_frame = frame_idx - window_size + 1
                         array = np.stack(seq[:window_size], axis=0)
                         file_path = os.path.join(
                             output_dir,
-                            f"{os.path.basename(video_path)}_{obj_id}_{frame_idx}.npz",
+                            f"{os.path.basename(video_path)}_{obj_id}_{start_frame}.npz",
                         )
                         np.savez_compressed(file_path, data=array, label=label)
                         saved_files.append(file_path)
@@ -105,10 +106,11 @@ class DataPipeline:
                         # save partial sequence if long enough
                         seq = sequences[obj_id]
                         if len(seq) >= window_size:
+                            start_frame = frame_idx - len(seq)
                             array = np.stack(seq[:window_size], axis=0)
                             file_path = os.path.join(
                                 output_dir,
-                                f"{os.path.basename(video_path)}_{obj_id}_{frame_idx}.npz",
+                                f"{os.path.basename(video_path)}_{obj_id}_{start_frame}.npz",
                             )
                             np.savez_compressed(file_path, data=array, label=label)
                             saved_files.append(file_path)
