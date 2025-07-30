@@ -15,7 +15,10 @@ except Exception:
 
 
 class DataPipeline:
-    """Pipeline for extracting skeleton sequences from videos."""
+    """Pipeline for extracting skeleton sequences from videos.
+
+    修复多人场景下 pose 与 id 不匹配的问题，并在对象丢失时清理缓存。
+    """
 
     def __init__(self, model_name: str = "yolov8n", conf: float = 0.5):
         if YOLO is None:
@@ -26,14 +29,15 @@ class DataPipeline:
             raise ImportError("mediapipe is required for pose extraction")
         self.pose = mp.solutions.pose.Pose(static_image_mode=False)
 
-    def _extract_pose(self, frame: np.ndarray):
+    def _extract_pose(self, frame: np.ndarray) -> np.ndarray | None:
+        """Extract pose landmarks from a frame."""
         result = self.pose.process(cv2.cvtColor(frame, cv2.COLOR_BGR2RGB))
         if not result.pose_landmarks:
             return None
         landmarks = []
         for lm in result.pose_landmarks.landmark:
             landmarks.append([lm.x, lm.y, lm.z])
-        return np.array(landmarks)
+        return np.array(landmarks, dtype=np.float32)
 
     def process_video(
         self,
@@ -58,34 +62,59 @@ class DataPipeline:
             raise IOError(f"Cannot open {video_path}")
 
         sequences: Dict[int, List[np.ndarray]] = {}
+        missing: Dict[int, int] = {}
         saved_files = []
         frame_idx = 0
         while True:
             ret, frame = cap.read()
             if not ret:
                 break
+
             results = self.detector.track(frame, conf=self.conf, persist=True)
-            poses = self._extract_pose(frame)
-            if poses is None:
-                frame_idx += 1
-                continue
             boxes = results[0].boxes
             ids = boxes.id if hasattr(boxes, "id") else None
-            if ids is None:
-                frame_idx += 1
-                continue
-            for pose, obj_id in zip([poses] * len(ids), ids):
-                seq = sequences.setdefault(int(obj_id), [])
-                seq.append(pose)
-                if len(seq) == window_size:
-                    array = np.stack(seq, axis=0)
-                    file_path = os.path.join(
-                        output_dir,
-                        f"{os.path.basename(video_path)}_{obj_id}_{frame_idx}.npz",
-                    )
-                    np.savez_compressed(file_path, data=array, label=label)
-                    saved_files.append(file_path)
-                    sequences[obj_id] = []
+            current_ids = []
+
+            if ids is not None:
+                for box, obj_id in zip(boxes.xyxy, ids):
+                    x1, y1, x2, y2 = box.tolist()
+                    x1, y1, x2, y2 = map(int, [x1, y1, x2, y2])
+                    crop = frame[y1:y2, x1:x2]
+                    pose = self._extract_pose(crop)
+                    if pose is None:
+                        continue
+                    current_ids.append(int(obj_id))
+                    seq = sequences.setdefault(int(obj_id), [])
+                    seq.append(pose)
+                    missing[int(obj_id)] = 0
+                    if len(seq) >= window_size:
+                        array = np.stack(seq[:window_size], axis=0)
+                        file_path = os.path.join(
+                            output_dir,
+                            f"{os.path.basename(video_path)}_{obj_id}_{frame_idx}.npz",
+                        )
+                        np.savez_compressed(file_path, data=array, label=label)
+                        saved_files.append(file_path)
+                        sequences[int(obj_id)] = []
+
+            # update missing counters for ids not detected this frame
+            for obj_id in list(sequences.keys()):
+                if obj_id not in current_ids:
+                    missing[obj_id] = missing.get(obj_id, 0) + 1
+                    if missing[obj_id] > window_size:
+                        # save partial sequence if long enough
+                        seq = sequences[obj_id]
+                        if len(seq) >= window_size:
+                            array = np.stack(seq[:window_size], axis=0)
+                            file_path = os.path.join(
+                                output_dir,
+                                f"{os.path.basename(video_path)}_{obj_id}_{frame_idx}.npz",
+                            )
+                            np.savez_compressed(file_path, data=array, label=label)
+                            saved_files.append(file_path)
+                        sequences.pop(obj_id, None)
+                        missing.pop(obj_id, None)
+
             frame_idx += 1
         cap.release()
         return saved_files

@@ -15,13 +15,14 @@
 python -m pip install ultralytics mediapipe opencv-python
 python - <<'PY'
 from src.data_pipeline import DataPipeline
+# 初始化管道，内部会自动进行目标跟踪
 pipeline = DataPipeline()
 # 将 video.mp4 中的动作标记为 1，保存到 dataset 目录
 pipeline.process_video('video.mp4', label=1, output_dir='dataset')
 PY
 ```
 
-该模块会对视频中检测到的每个人进行跟踪，每获得固定长度的骨骼序列后保存为 `npz` 文件，文件中包含 `data` 和 `label` 两个字段。
+该模块会在检测到多人时分别计算每个人的姿态，并在对象离开画面一定时间后自动清理缓存，避免长期占用内存。每获得固定长度的骨骼序列后保存为 `npz` 文件，文件中包含 `data` 和 `label` 两个字段。
 
 ## 模型训练
 
