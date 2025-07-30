@@ -1,0 +1,5 @@
+pose_sequences/
+*.mp4
+__pycache__/
+.vscode
+*.pt
