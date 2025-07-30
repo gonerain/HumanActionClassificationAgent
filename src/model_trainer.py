@@ -7,6 +7,7 @@ import torch
 from torch import nn
 from torch.utils.data import Dataset, DataLoader
 from tqdm import tqdm
+from sklearn.metrics import confusion_matrix, classification_report
 
 
 class SkeletonDataset(Dataset):
@@ -26,7 +27,7 @@ class SkeletonDataset(Dataset):
 
 
 def load_dataset(data_dir: str, split: float = 0.8):
-    files = glob(os.path.join(data_dir, "*.npz"))
+    files = glob(os.path.join(data_dir, "**", "*.npz"), recursive=True)
     np.random.shuffle(files)
     split_idx = int(len(files) * split)
     return files[:split_idx], files[split_idx:]
@@ -50,7 +51,13 @@ class LSTMClassifier(nn.Module):
         return out
 
 
-def train(data_dir: str, epochs: int = 20, batch_size: int = 8, lr: float = 1e-3):
+def train(
+    data_dir: str,
+    epochs: int = 20,
+    batch_size: int = 8,
+    lr: float = 1e-3,
+    patience: int = 5,
+):
     train_files, val_files = load_dataset(data_dir)
     train_loader = DataLoader(
         SkeletonDataset(train_files), batch_size=batch_size, shuffle=True
@@ -65,6 +72,10 @@ def train(data_dir: str, epochs: int = 20, batch_size: int = 8, lr: float = 1e-3
     optimizer = torch.optim.Adam(model.parameters(), lr=lr)
     criterion = nn.CrossEntropyLoss()
 
+    best_loss = float("inf")
+    epochs_no_improve = 0
+    best_state = None
+
     for epoch in range(epochs):
         model.train()
         total_loss = 0.0
@@ -77,24 +88,57 @@ def train(data_dir: str, epochs: int = 20, batch_size: int = 8, lr: float = 1e-3
             loss.backward()
             optimizer.step()
             total_loss += loss.item()
-        print(f"Epoch {epoch+1}, Train Loss: {total_loss/len(train_loader):.4f}")
+        avg_train_loss = total_loss / len(train_loader)
 
         model.eval()
         correct = 0
         total = 0
+        val_loss = 0.0
         with torch.no_grad():
             for seq, label in val_loader:
                 seq = seq.view(seq.size(0), seq.size(1), -1).to(device)
                 label = label.long().to(device)
                 output = model(seq)
+                loss = criterion(output, label)
+                val_loss += loss.item()
                 pred = output.argmax(dim=1)
                 correct += (pred == label).sum().item()
                 total += label.size(0)
+        val_loss /= len(val_loader)
         acc = correct / total if total > 0 else 0
-        print(f"Validation Accuracy: {acc:.4f}")
+        print(
+            f"Epoch {epoch+1}, Train Loss: {avg_train_loss:.4f} | Validation Loss: {val_loss:.4f} | Acc: {acc:.4f}"
+        )
+
+        if val_loss < best_loss:
+            best_loss = val_loss
+            epochs_no_improve = 0
+            best_state = model.state_dict()
+        else:
+            epochs_no_improve += 1
+            if epochs_no_improve >= patience:
+                print("Early stopping triggered")
+                break
 
     os.makedirs("weights", exist_ok=True)
+    if best_state is not None:
+        model.load_state_dict(best_state)
     torch.save(model.state_dict(), os.path.join("weights", "model.pt"))
+
+    # confusion matrix and classification report on validation set
+    y_true, y_pred = [], []
+    model.eval()
+    with torch.no_grad():
+        for seq, label in val_loader:
+            seq = seq.view(seq.size(0), seq.size(1), -1).to(device)
+            label = label.long().to(device)
+            output = model(seq)
+            pred = output.argmax(dim=1)
+            y_true.extend(label.cpu().numpy())
+            y_pred.extend(pred.cpu().numpy())
+
+    print("Confusion Matrix:\n", confusion_matrix(y_true, y_pred))
+    print("Classification Report:\n", classification_report(y_true, y_pred))
 
 
 if __name__ == "__main__":
@@ -105,6 +149,7 @@ if __name__ == "__main__":
     parser.add_argument("--epochs", type=int, default=20)
     parser.add_argument("--batch_size", type=int, default=8)
     parser.add_argument("--lr", type=float, default=1e-3)
+    parser.add_argument("--patience", type=int, default=5)
     args = parser.parse_args()
 
-    train(args.data_dir, args.epochs, args.batch_size, args.lr)
+    train(args.data_dir, args.epochs, args.batch_size, args.lr, args.patience)

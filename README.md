@@ -26,7 +26,7 @@ PY
 
 ## 模型训练
 
-依赖：`torch`。
+依赖：`torch`、`scikit-learn`。
 
 训练脚本位于 `src/model_trainer.py`，执行方式如下：
 
@@ -35,6 +35,9 @@ python src/model_trainer.py dataset --epochs 30 --batch_size 16
 ```
 
 脚本会自动检测是否存在可用的 GPU，并在训练过程中使用 `tqdm` 显示进度条。
+数据集目录可包含子文件夹，脚本会递归查找其中的 `npz` 文件，便于按动作类别分别存放数据。
+训练过程会输出训练损失、验证损失以及验证集准确率，并内置 Early Stopping，当验证损失多次不再下降时提前结束。
+训练结束后会打印混淆矩阵和分类报告，便于评估模型效果。
 
 训练结束后会在 `weights/` 目录下生成 `model.pt`，可用于后续推理。
 
