@@ -1,50 +1,51 @@
 # HumanActionClassificationAgent
 
-本项目提供了一个基础的人体动作识别流程，适用于工业现场中"是否在工作"的检测。主要包含两个部分：
+本项目提供一个基于骨骼关键点的人体动作识别流程，适用于判定现场人员是否在工作。仓库包含两部分核心代码：
 
-1. **数据处理模块（Data Pipeline）**：从视频中提取骨骼序列并保存为 `npz` 文件。
-2. **分类模型训练模块（Model Trainer）**：使用 LSTM 对骨骼序列进行分类训练。
+1. **数据处理模块（Data Pipeline）**：从视频中提取人体骨骼序列并保存為 `.npz` 文件，可在多人场景下区分不同 ID。
+2. **模型训练模块（Model Trainer）**：使用 LSTM 对骨骼序列进行分类，并在训练结束后输出混淆矩阵与分类报告。
 
-## 数据处理
-
-依赖：`ultralytics`、`mediapipe`、`opencv-python`。
-
-示例代码位于 `src/data_pipeline.py`，可以自动将视频切片为固定长度的骨骼序列，便于逐段标注：
+## 安装依赖
 
 ```bash
-python -m pip install ultralytics mediapipe opencv-python
+python -m pip install -r requirements.txt
+```
+
+如果需要 GPU 训练，请确保已正确安装 `torch` 的 CUDA 版本。
+
+## 数据采集流程
+
+示例脚本位于 `src/data_pipeline.py`。以下代码展示如何将 `video.mp4` 中的动作标注为 `1` 并保存到 `dataset/` 目录：
+
+```bash
 python - <<'PY'
 from src.data_pipeline import DataPipeline
-# 初始化管道，内部会自动进行目标跟踪
+# 初始化管道，内部使用 YOLO 检测并为每个人分配 ID
 pipeline = DataPipeline()
-# 将 video.mp4 中的动作标记为 1，保存到 dataset 目录
+# 处理视频，window_size 默认为 30 帧
 pipeline.process_video('video.mp4', label=1, output_dir='dataset')
 PY
 ```
 
-该模块会在检测到多人时分别计算每个人的姿态，并在对象离开画面一定时间后自动清理缓存，避免长期占用内存。每累积 `N` 帧（默认 30 帧）便保存一个 `npz` 文件，形状为 `(N, 33, 3)`，文件名包含视频名、对象 ID 与起始帧号，便于人工逐段标注。
+运行后会在 `dataset/` 下生成若干 `.npz` 文件，每个文件包含 `(N, 33, 3)` 的 `data` 数组和 `label`。文件名格式为 `視頻名_對象ID_起始幀.npz`，便于后续人工核对与补充标注。可按类别建立子文件夹，例如 `dataset/work/`、`dataset/other/`，训练脚本会递归搜索所有子目录。
 
-## 模型训练
+## 训练流程
 
-依赖：`torch`、`scikit-learn`。
-
-训练脚本位于 `src/model_trainer.py`，执行方式如下：
+训练脚本位于 `src/model_trainer.py`，使用方法如下：
 
 ```bash
-python src/model_trainer.py dataset --epochs 30 --batch_size 16
+python src/model_trainer.py dataset --epochs 30 --batch_size 16 --patience 5
 ```
 
-脚本会自动检测是否存在可用的 GPU，并在训练过程中使用 `tqdm` 显示进度条。
-数据集目录可包含子文件夹，脚本会递归查找其中的 `npz` 文件，便于按动作类别分别存放数据。
-训练过程会输出训练损失、验证损失以及验证集准确率，并内置 Early Stopping，当验证损失多次不再下降时提前结束。
-训练结束后会打印混淆矩阵和分类报告，便于评估模型效果。
+主要特性：
 
-训练结束后会在 `weights/` 目录下生成 `model.pt`，可用于后续推理。
+- 自动检测 GPU 并将模型及数据搬移到 GPU 上。
+- 在控制台显示训练进度条，同时打印训练/验证损失与准确率。
+- 当验证损失连续多次不下降时触发 Early Stopping。
+- 训练结束后保存最优模型至 `weights/model.pt`，并输出混淆矩阵与分类报告。
 
-## 多人场景的处理思路
+## 多人场景的处理
 
-- 使用 YOLO 检测所有人体并分配 ID，通过 `track` 函数保持同一人的序列连续。
-- 对每个 ID 分别提取骨骼关键点序列，生成独立的样本。
-- 在训练阶段，通过给定的标签（如“正在工作”或“非工作”）训练分类器，从而在实际场景下区分不同人员的动作状态。
-
-这样即使画面中同时出现多个人，也能分别判断谁在工作、谁只是路过。 
+- YOLO 在每帧检测所有人体并分配 ID，`DataPipeline` 会为每个 ID 独立缓存序列。
+- 当某个 ID 在一定帧数内消失时，其缓存会被清理，以节省内存并防止混淆。
+- 这样即使画面中出现多个人，也能分别判断谁在工作、谁只是路过。
