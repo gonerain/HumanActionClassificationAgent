@@ -63,6 +63,7 @@ class DataPipeline:
             raise IOError(f"Cannot open {video_path}")
 
         sequences: Dict[int, List[np.ndarray]] = {}
+        boxes_seq: Dict[int, List[np.ndarray]] = {}
         missing: Dict[int, int] = {}
         saved_files = []
         frame_idx = 0
@@ -87,17 +88,21 @@ class DataPipeline:
                     current_ids.append(int(obj_id))
                     seq = sequences.setdefault(int(obj_id), [])
                     seq.append(pose)
+                    box_seq = boxes_seq.setdefault(int(obj_id), [])
+                    box_seq.append(np.array([x1, y1, x2, y2], dtype=np.int32))
                     missing[int(obj_id)] = 0
                     if len(seq) >= window_size:
                         start_frame = frame_idx - window_size + 1
                         array = np.stack(seq[:window_size], axis=0)
+                        box_array = np.stack(box_seq[:window_size], axis=0)
                         file_path = os.path.join(
                             output_dir,
                             f"{os.path.basename(video_path)}_{obj_id}_{start_frame}.npz",
                         )
-                        np.savez_compressed(file_path, data=array, label=label)
+                        np.savez_compressed(file_path, data=array, boxes=box_array, label=label)
                         saved_files.append(file_path)
                         sequences[int(obj_id)] = []
+                        boxes_seq[int(obj_id)] = []
 
             if debug:
                 vis = frame.copy()
@@ -125,16 +130,22 @@ class DataPipeline:
                     if missing[obj_id] > window_size:
                         # save partial sequence if long enough
                         seq = sequences[obj_id]
+                        bseq = boxes_seq.get(obj_id, [])
                         if len(seq) >= window_size:
                             start_frame = frame_idx - len(seq)
                             array = np.stack(seq[:window_size], axis=0)
+                            box_array = np.stack(bseq[:window_size], axis=0) if bseq else None
                             file_path = os.path.join(
                                 output_dir,
                                 f"{os.path.basename(video_path)}_{obj_id}_{start_frame}.npz",
                             )
-                            np.savez_compressed(file_path, data=array, label=label)
+                            if box_array is not None:
+                                np.savez_compressed(file_path, data=array, boxes=box_array, label=label)
+                            else:
+                                np.savez_compressed(file_path, data=array, label=label)
                             saved_files.append(file_path)
                         sequences.pop(obj_id, None)
+                        boxes_seq.pop(obj_id, None)
                         missing.pop(obj_id, None)
 
             frame_idx += 1

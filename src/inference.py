@@ -15,7 +15,7 @@ try:
 except Exception:
     mp = None
 
-from model_trainer import LSTMClassifier
+from .model_trainer import LSTMClassifier
 
 
 class ActionInference:
@@ -105,17 +105,5 @@ class ActionInference:
                 if cv2.waitKey(1) & 0xFF == ord("q"):
                     break
         cap.release()
-        self.pose.close()
         if debug:
             cv2.destroyAllWindows()
-
-if __name__ == "__main__":
-    import argparse
-
-    parser = argparse.ArgumentParser(description="Run real-time action inference")
-    parser.add_argument("--model", required=True, help="Path to trained model.pt")
-    parser.add_argument("--video", default=0, help="Video source (int or file path)")
-    args = parser.parse_args()
-
-    infer = ActionInference(model_path=args.model)
-    infer.run(video_source=int(args.video) if args.video.isdigit() else args.video)
