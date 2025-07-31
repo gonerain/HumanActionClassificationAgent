@@ -65,7 +65,7 @@ def main(dataset_dir, video_dir):
             label_data = int(data.get('label', -1))
         base = os.path.basename(file)
         vid_name, id_label, start = base.rsplit('_', 2)
-        obj_id, label_in_name = id_label.split('.') if '.' in id_label else (id_label, '0')
+        obj_id, label_in_name, _ = id_label.split('.') if '.' in id_label else (id_label, '0')
         label = label_data if label_data >= 0 else int(label_in_name)
         start = int(os.path.splitext(start)[0])
         video_path = os.path.join(video_dir, vid_name)

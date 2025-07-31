@@ -15,13 +15,13 @@ try:
 except Exception:
     mp = None
 
-from .model_trainer import LSTMClassifier
+from model_trainer import LSTMClassifier
 
 
 class ActionInference:
     """Run trained action classifier on video stream."""
 
-    def __init__(self, model_path: str, model_name: str = "yolov8n", conf: float = 0.5, window_size: int = 30):
+    def __init__(self, model_path: str, model_name: str = "yolo11s", conf: float = 0.5, window_size: int = 30):
         if YOLO is None:
             raise ImportError("ultralytics is required for YOLO detection")
         if mp is None:
@@ -107,3 +107,16 @@ class ActionInference:
         cap.release()
         if debug:
             cv2.destroyAllWindows()
+
+
+if __name__ == "__main__":
+    import argparse
+
+    parser = argparse.ArgumentParser(description="Run real-time action inference")
+    parser.add_argument("--model", required=True, help="Path to trained model.pt")
+    parser.add_argument("--video", default=0, help="Video source (int or file path)")
+    args = parser.parse_args()
+
+    infer = ActionInference(model_path=args.model)
+    infer.run(video_source=int(args.video) if args.video.isdigit() else args.video)
+
