@@ -59,13 +59,14 @@ def main(dataset_dir, video_dir):
     idx = 0
     while True:
         file = files[idx]
-        data = np.load(file)
-        seq = data['data']
+        with np.load(file) as data:
+            seq = data['data']
+            boxes = data['boxes'] if 'boxes' in data else None
+            label_data = int(data.get('label', -1))
         base = os.path.basename(file)
         vid_name, id_label, start = base.rsplit('_', 2)
         obj_id, label_in_name = id_label.split('.') if '.' in id_label else (id_label, '0')
-        label = int(data.get('label', int(label_in_name)))
-        boxes = data['boxes'] if 'boxes' in data else None
+        label = label_data if label_data >= 0 else int(label_in_name)
         start = int(os.path.splitext(start)[0])
         video_path = os.path.join(video_dir, vid_name)
         play_sequence(video_path, start, seq, boxes, label)
