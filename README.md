@@ -27,12 +27,12 @@ pipeline.process_video('video.mp4', label=1, output_dir='dataset')
 PY
 ```
 
-运行后会在 `dataset/` 下生成若干 `.npz` 文件，每个文件包含 `(N, 33, 3)` 的 `data` 数组和 `label`。文件名格式为 `視頻名_對象ID_起始幀.npz`，便于后续人工核对与补充标注。可按类别建立子文件夹，例如 `dataset/work/`、`dataset/other/`，训练脚本会递归搜索所有子目录。
+运行后会在 `dataset/` 下生成若干 `.npz` 文件，每个文件包含 `(N, 33, 3)` 的 `data` 数组和 `label`。文件名格式为 `视频名_ID.标签_起始帧.npz`，例如 `video.mp4_1.0_25.npz`，便于按标签筛选与核对。可按类别建立子文件夹，如 `dataset/work/`、`dataset/other/`，训练脚本会递归搜索所有子目录。
 若想调试检测框与跟踪 ID，可在 `process_video` 调用时传入 `debug=True`，程序会弹窗显示实时检测结果，按 `q` 键退出。
 
 ## 数据集标注与可视化
 
-生成的 `.npz` 序列可通过 `src/label_tool.py` 进行人工校对和重新标注。脚本在播放原始视频片段的同时绘制骨骼点，按键说明如下：
+生成的 `.npz` 序列可通过 `src/label_tool.py` 进行人工校对和重新标注。脚本会在播放原始视频片段的同时绘制骨骼点，并在修改标签后自动重命名文件，按键说明如下：
 
 - `n`：下一条数据
 - `p`：上一条数据

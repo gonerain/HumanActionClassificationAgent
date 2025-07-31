@@ -97,7 +97,7 @@ class DataPipeline:
                         box_array = np.stack(box_seq[:window_size], axis=0)
                         file_path = os.path.join(
                             output_dir,
-                            f"{os.path.basename(video_path)}_{obj_id}_{start_frame}.npz",
+                            f"{os.path.basename(video_path)}_{obj_id}.{label}_{start_frame}.npz",
                         )
                         np.savez_compressed(file_path, data=array, boxes=box_array, label=label)
                         saved_files.append(file_path)
@@ -137,7 +137,7 @@ class DataPipeline:
                             box_array = np.stack(bseq[:window_size], axis=0) if bseq else None
                             file_path = os.path.join(
                                 output_dir,
-                                f"{os.path.basename(video_path)}_{obj_id}_{start_frame}.npz",
+                                f"{os.path.basename(video_path)}_{obj_id}.{label}_{start_frame}.npz",
                             )
                             if box_array is not None:
                                 np.savez_compressed(file_path, data=array, boxes=box_array, label=label)

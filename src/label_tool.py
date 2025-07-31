@@ -61,10 +61,11 @@ def main(dataset_dir, video_dir):
         file = files[idx]
         data = np.load(file)
         seq = data['data']
-        label = int(data.get('label', -1))
-        boxes = data['boxes'] if 'boxes' in data else None
         base = os.path.basename(file)
-        vid_name, obj_id, start = base.rsplit('_', 2)
+        vid_name, id_label, start = base.rsplit('_', 2)
+        obj_id, label_in_name = id_label.split('.') if '.' in id_label else (id_label, '0')
+        label = int(data.get('label', int(label_in_name)))
+        boxes = data['boxes'] if 'boxes' in data else None
         start = int(os.path.splitext(start)[0])
         video_path = os.path.join(video_dir, vid_name)
         play_sequence(video_path, start, seq, boxes, label)
@@ -80,7 +81,14 @@ def main(dataset_dir, video_dir):
                 break
             elif ord('0') <= key <= ord('9'):
                 label = key - ord('0')
-                np.savez_compressed(file, data=seq, boxes=boxes, label=label)
+                new_base = f"{vid_name}_{obj_id}.{label}_{start}.npz"
+                new_file = os.path.join(os.path.dirname(file), new_base)
+                np.savez_compressed(new_file, data=seq, boxes=boxes, label=label)
+                if new_file != file:
+                    os.remove(file)
+                    files[idx] = new_file
+                    file = new_file
+                    base = new_base
                 print(f'已保存标签 {label} -> {base}')
             elif key == ord('q') or key == 27:
                 cv2.destroyAllWindows()
