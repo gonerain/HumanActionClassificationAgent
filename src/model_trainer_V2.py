@@ -10,8 +10,8 @@ from tqdm import tqdm
 from sklearn.metrics import confusion_matrix, classification_report
 
 
-class SkeletonDatasetV2(Dataset):
-    """Dataset with velocity features."""
+class SkeletonDataset(Dataset):
+    """Dataset wrapping skeleton sequences saved as npz files."""
 
     def __init__(self, files: List[str]):
         self.files = files
@@ -21,11 +21,9 @@ class SkeletonDatasetV2(Dataset):
 
     def __getitem__(self, idx: int):
         data = np.load(self.files[idx])
-        seq = data["data"].astype(np.float32)  # (T, J, D)
-        vel = np.diff(seq, axis=0, prepend=seq[0:1])
-        feat = np.concatenate([seq, vel], axis=-1)
+        seq = data["data"].astype(np.float32)
         label = int(data["label"])
-        return torch.from_numpy(feat), label
+        return torch.from_numpy(seq), label
 
 
 def load_dataset(data_dir: str, split: float = 0.8):
@@ -35,36 +33,27 @@ def load_dataset(data_dir: str, split: float = 0.8):
     return files[:split_idx], files[split_idx:]
 
 
-class Attention(nn.Module):
-    def __init__(self, hidden_size: int):
-        super().__init__()
-        self.attn = nn.Linear(hidden_size * 2, 1)
-
-    def forward(self, outputs: torch.Tensor):
-        # outputs: (B, T, H*2)
-        weights = torch.softmax(self.attn(outputs).squeeze(-1), dim=1)
-        context = torch.sum(outputs * weights.unsqueeze(-1), dim=1)
-        return context
-
-
 class BiLSTMAttentionClassifier(nn.Module):
-    def __init__(self, input_size: int, hidden_size: int = 128, num_layers: int = 1, num_classes: int = 2):
+    """Bidirectional LSTM with a simple attention mechanism."""
+
+    def __init__(self, input_size: int = 99, hidden_size: int = 128, num_classes: int = 2, num_layers: int = 1):
         super().__init__()
         self.lstm = nn.LSTM(
             input_size,
             hidden_size,
             num_layers=num_layers,
-            batch_first=True,
             bidirectional=True,
+            batch_first=True,
         )
-        self.attn = Attention(hidden_size)
+        self.attn = nn.Linear(hidden_size * 2, 1)
         self.fc = nn.Linear(hidden_size * 2, num_classes)
 
     def forward(self, x):
-        outputs, _ = self.lstm(x)
-        context = self.attn(outputs)
-        out = self.fc(context)
-        return out
+        # x: (B, T, N)
+        output, _ = self.lstm(x)
+        attn_weights = torch.softmax(self.attn(output).squeeze(-1), dim=1)  # (B, T)
+        context = torch.sum(output * attn_weights.unsqueeze(-1), dim=1)
+        return self.fc(context)
 
 
 def train(
@@ -75,14 +64,11 @@ def train(
     patience: int = 5,
 ):
     train_files, val_files = load_dataset(data_dir)
-    train_loader = DataLoader(
-        SkeletonDatasetV2(train_files), batch_size=batch_size, shuffle=True
-    )
-    val_loader = DataLoader(SkeletonDatasetV2(val_files), batch_size=batch_size)
+    train_loader = DataLoader(SkeletonDataset(train_files), batch_size=batch_size, shuffle=True)
+    val_loader = DataLoader(SkeletonDataset(val_files), batch_size=batch_size)
 
     sample = np.load(train_files[0])["data"]
-    vel = np.diff(sample, axis=0, prepend=sample[0:1])
-    input_size = sample.shape[-1] * 2 * sample.shape[-2]
+    input_size = sample.shape[-1] * sample.shape[-2]
 
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
     model = BiLSTMAttentionClassifier(input_size=input_size).to(device)
@@ -123,9 +109,7 @@ def train(
                 total += label.size(0)
         val_loss /= len(val_loader)
         acc = correct / total if total > 0 else 0
-        print(
-            f"Epoch {epoch+1}, Train Loss: {avg_train_loss:.4f} | Validation Loss: {val_loss:.4f} | Acc: {acc:.4f}"
-        )
+        print(f"Epoch {epoch+1}, Train Loss: {avg_train_loss:.4f} | Validation Loss: {val_loss:.4f} | Acc: {acc:.4f}")
 
         if val_loss < best_loss:
             best_loss = val_loss
@@ -142,7 +126,6 @@ def train(
         model.load_state_dict(best_state)
     torch.save(model.state_dict(), os.path.join("weights", "model_v2.pt"))
 
-    # confusion matrix and classification report on validation set
     y_true, y_pred = [], []
     model.eval()
     with torch.no_grad():
