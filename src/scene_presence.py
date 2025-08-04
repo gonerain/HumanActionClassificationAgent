@@ -22,26 +22,31 @@ except Exception:  # pragma: no cover - runtime dependency
 CONFIG_FILE = Path("scene_presence_config.json")
 
 
-def load_region(path: Path, default: List[Tuple[int, int]]) -> List[Tuple[int, int]]:
-    """Load polygon region from JSON file or return default."""
+def load_config(path: Path, default: Dict) -> Dict:
+    """Load configuration from JSON file or return ``default``."""
 
     if path.exists():
         try:
             with path.open("r", encoding="utf-8") as fh:
                 data = json.load(fh)
-            region = data.get("region")
+            default.update(data)
+            region = default.get("region")
             if region:
-                return [tuple(map(int, pt)) for pt in region]
+                default["region"] = [tuple(map(int, pt)) for pt in region]
         except Exception:
             pass
     return default
 
 
-def save_region(path: Path, region: List[Tuple[int, int]]) -> None:
-    """Persist polygon region to JSON file."""
+def save_config(path: Path, config: Dict) -> None:
+    """Persist configuration to JSON file."""
 
+    to_save = config.copy()
+    region = to_save.get("region")
+    if region:
+        to_save["region"] = [list(pt) for pt in region]
     with path.open("w", encoding="utf-8") as fh:
-        json.dump({"region": region}, fh)
+        json.dump(to_save, fh)
 
 
 def select_polygon(window: str, frame: np.ndarray) -> List[Tuple[int, int]]:
@@ -220,10 +225,13 @@ class ScenePresenceManager:
 
 def run_demo(
     video_source: str | int = 0,
-    model_name: str = "yolo11s",
-    conf: float = 0.5,
+    model_name: str | None = None,
+    conf: float | None = None,
     visualize: bool = True,
     config_path: Path = CONFIG_FILE,
+    enter_frames: int | None = None,
+    leave_frames: int | None = None,
+    finish_frames: int | None = None,
 ) -> None:
 
     """Run presence detection demo with adjustable region."""
@@ -235,19 +243,44 @@ def run_demo(
     if not cap.isOpened():
         raise IOError(f"Cannot open {video_source}")
 
-    detector = YOLO(model_name)
-
-
     ret, frame = cap.read()
     if not ret:
         cap.release()
         raise IOError("Cannot read from video source")
 
     h, w = frame.shape[:2]
-    default_region = [(0, 0), (w - 1, 0), (w - 1, h - 1), (0, h - 1)]
-    region = load_region(config_path, default_region)
-    save_region(config_path, region)  # ensure config file exists
-    manager = ScenePresenceManager(region=region)
+    default_cfg: Dict = {
+        "region": [(0, 0), (w - 1, 0), (w - 1, h - 1), (0, h - 1)],
+        "model_name": "yolo11s",
+        "conf": 0.5,
+        "enter_frames": 15,
+        "leave_frames": 30,
+        "finish_frames": None,
+    }
+    config = load_config(config_path, default_cfg)
+
+    # Override config with CLI-specified values when provided
+    if model_name is not None:
+        config["model_name"] = model_name
+    if conf is not None:
+        config["conf"] = conf
+    if enter_frames is not None:
+        config["enter_frames"] = enter_frames
+    if leave_frames is not None:
+        config["leave_frames"] = leave_frames
+    if finish_frames is not None:
+        config["finish_frames"] = finish_frames
+
+    save_config(config_path, config)  # ensure config file exists
+
+    detector = YOLO(config["model_name"])
+    conf = float(config["conf"])
+    manager = ScenePresenceManager(
+        region=config["region"],
+        enter_frames=int(config["enter_frames"]),
+        leave_frames=int(config["leave_frames"]),
+        finish_frames=config.get("finish_frames"),
+    )
     cap.set(cv2.CAP_PROP_POS_FRAMES, 0)
 
 
@@ -280,7 +313,8 @@ def run_demo(
                 poly = select_polygon("scene_presence", frame)
                 if poly:
                     manager.set_region(poly)
-                    save_region(config_path, poly)
+                    config["region"] = poly
+                    save_config(config_path, config)
         else:
             # When visualization is disabled, simply continue processing frames.
             pass
@@ -296,11 +330,14 @@ if __name__ == "__main__":  # pragma: no cover - demo usage
 
     parser = argparse.ArgumentParser(description="Scene-level presence detection demo")
     parser.add_argument("--video", default=0, help="Video source (int or file path)")
-    parser.add_argument("--model", default="yolo11s", help="YOLO model name")
-    parser.add_argument("--conf", type=float, default=0.5, help="Detection confidence")
+    parser.add_argument("--model", help="YOLO model name")
+    parser.add_argument("--conf", type=float, help="Detection confidence")
+    parser.add_argument("--enter", type=int, help="Frames required to activate")
+    parser.add_argument("--leave", type=int, help="Frames tolerated outside region")
+    parser.add_argument("--finish", type=int, help="Max frames in active state")
 
     parser.add_argument(
-        "--config", default=str(CONFIG_FILE), help="Path to region config JSON"
+        "--config", default=str(CONFIG_FILE), help="Path to configuration JSON"
     )
     parser.add_argument(
         "--no-display", action="store_true", help="Disable visualization windows"
@@ -314,5 +351,8 @@ if __name__ == "__main__":  # pragma: no cover - demo usage
         conf=args.conf,
         visualize=not args.no_display,
         config_path=Path(args.config),
+        enter_frames=args.enter,
+        leave_frames=args.leave,
+        finish_frames=args.finish,
     )
 
