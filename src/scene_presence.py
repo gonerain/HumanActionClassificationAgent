@@ -138,7 +138,10 @@ class ScenePresenceManager:
                 2,
             )
 
-        text = "\uD83D\uDFE2 有人在岗" if self.is_scene_active() else "\uD83D\uDD34 无人在岗"
+        # ``cv2.putText`` only supports ASCII characters. Using emojis or
+        # non-ASCII text can trigger a segmentation fault on some builds of
+        # OpenCV, so we keep the overlay simple and ASCII-only.
+        text = "ACTIVE" if self.is_scene_active() else "INACTIVE"
         cv2.putText(
             frame,
             text,

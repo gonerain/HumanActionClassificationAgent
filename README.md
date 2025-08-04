@@ -94,4 +94,4 @@ PY
 python src/scene_presence.py --video 0 --model yolo11s
 ```
 
-运行时按 `r` 可重新选择监控区域，按 `q` 退出。若任一 ID 处于 `active` 状态，界面左上角会显示“🟢 有人在岗”。
+运行时按 `r` 可重新选择监控区域，按 `q` 退出。若任一 ID 处于 `active` 状态，界面左上角会显示 `ACTIVE`，否则为 `INACTIVE`。
