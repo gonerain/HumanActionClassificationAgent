@@ -113,6 +113,11 @@ class ScenePresenceManager:
 
         if self.region is not None:
             pts = np.array(self.region, dtype=np.int32)
+
+            overlay = frame.copy()
+            cv2.fillPoly(overlay, [pts], color=(255, 0, 0))
+            cv2.addWeighted(overlay, 0.2, frame, 0.8, 0, frame)
+
             cv2.polylines(frame, [pts], isClosed=True, color=(255, 0, 0), thickness=2)
 
         for oid, state in self.workers.items():
