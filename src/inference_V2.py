@@ -20,7 +20,7 @@ from model_trainer_V2 import BiLSTMAttentionClassifier
 class ActionInferenceV2:
     """Run trained V2 action classifier on video stream."""
 
-    def __init__(self, model_path: str, model_name: str = "yolov8n", conf: float = 0.5, window_size: int = 30):
+    def __init__(self, model_path: str, model_name: str = "yolo11", conf: float = 0.5, window_size: int = 30):
         if YOLO is None:
             raise ImportError("ultralytics is required for YOLO detection")
         if mp is None:
