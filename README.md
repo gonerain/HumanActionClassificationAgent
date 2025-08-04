@@ -83,3 +83,15 @@ PY
 ```
 
 脚本会在窗口中标注每个目标的 ID 和预测的动作类别。当目标长时间消失，其缓存序列会被清理。
+
+## 场景级人员在岗检测
+
+脚本 `src/scene_presence.py` 提供了基于状态机的多人在岗检测逻辑，并支持交互式调整监控区域。程序会根据各 ID 在区域内的连续帧数判断其状态（pending/active/paused/finished），同时在窗口中绘制状态色框和场景总体状态。
+
+运行示例：
+
+```bash
+python src/scene_presence.py --video 0 --model yolo11s
+```
+
+运行时按 `r` 可重新选择监控区域，按 `q` 退出。若任一 ID 处于 `active` 状态，界面左上角会显示“🟢 有人在岗”。
