@@ -3,9 +3,13 @@ from __future__ import annotations
 """Scene-level presence detection with adjustable region and visualization."""
 
 from dataclasses import dataclass
+
+from pathlib import Path
 from typing import Dict, Iterable, List, Tuple
 
 import cv2
+import json
+
 import numpy as np
 
 try:
@@ -13,6 +17,60 @@ try:
 except Exception:  # pragma: no cover - runtime dependency
     YOLO = None
 
+
+
+CONFIG_FILE = Path("scene_presence_config.json")
+
+
+def load_region(path: Path, default: List[Tuple[int, int]]) -> List[Tuple[int, int]]:
+    """Load polygon region from JSON file or return default."""
+
+    if path.exists():
+        try:
+            with path.open("r", encoding="utf-8") as fh:
+                data = json.load(fh)
+            region = data.get("region")
+            if region:
+                return [tuple(map(int, pt)) for pt in region]
+        except Exception:
+            pass
+    return default
+
+
+def save_region(path: Path, region: List[Tuple[int, int]]) -> None:
+    """Persist polygon region to JSON file."""
+
+    with path.open("w", encoding="utf-8") as fh:
+        json.dump({"region": region}, fh)
+
+
+def select_polygon(window: str, frame: np.ndarray) -> List[Tuple[int, int]]:
+    """Interactively select polygon points on ``frame``."""
+
+    points: List[Tuple[int, int]] = []
+
+    def on_mouse(event: int, x: int, y: int, flags: int, param: object) -> None:
+        if event == cv2.EVENT_LBUTTONDOWN:
+            points.append((x, y))
+
+    cv2.namedWindow(window)
+    cv2.setMouseCallback(window, on_mouse)
+    while True:
+        draw = frame.copy()
+        if points:
+            cv2.polylines(draw, [np.array(points, np.int32)], False, (0, 255, 0), 2)
+            for pt in points:
+                cv2.circle(draw, pt, 3, (0, 255, 0), -1)
+        cv2.imshow(window, draw)
+        key = cv2.waitKey(1) & 0xFF
+        if key in (13, ord(" ")) and len(points) >= 3:  # Enter/Space to finish
+            break
+        if key == 27:  # Esc cancels
+            points = []
+            break
+
+    cv2.setMouseCallback(window, lambda *args: None)
+    return points
 
 @dataclass
 class WorkerState:
@@ -113,7 +171,6 @@ class ScenePresenceManager:
 
         if self.region is not None:
             pts = np.array(self.region, dtype=np.int32)
-
             overlay = frame.copy()
             cv2.fillPoly(overlay, [pts], color=(255, 0, 0))
             cv2.addWeighted(overlay, 0.2, frame, 0.8, 0, frame)
@@ -160,7 +217,15 @@ class ScenePresenceManager:
 
 # ---------------------------------------------------------------------------
 
-def run_demo(video_source: str | int = 0, model_name: str = "yolo11s", conf: float = 0.5) -> None:
+
+def run_demo(
+    video_source: str | int = 0,
+    model_name: str = "yolo11s",
+    conf: float = 0.5,
+    visualize: bool = True,
+    config_path: Path = CONFIG_FILE,
+) -> None:
+
     """Run presence detection demo with adjustable region."""
 
     if YOLO is None:
@@ -171,7 +236,20 @@ def run_demo(video_source: str | int = 0, model_name: str = "yolo11s", conf: flo
         raise IOError(f"Cannot open {video_source}")
 
     detector = YOLO(model_name)
-    manager = ScenePresenceManager()
+
+
+    ret, frame = cap.read()
+    if not ret:
+        cap.release()
+        raise IOError("Cannot read from video source")
+
+    h, w = frame.shape[:2]
+    default_region = [(0, 0), (w - 1, 0), (w - 1, h - 1), (0, h - 1)]
+    region = load_region(config_path, default_region)
+    save_region(config_path, region)  # ensure config file exists
+    manager = ScenePresenceManager(region=region)
+    cap.set(cv2.CAP_PROP_POS_FRAMES, 0)
+
 
     while True:
         ret, frame = cap.read()
@@ -181,27 +259,36 @@ def run_demo(video_source: str | int = 0, model_name: str = "yolo11s", conf: flo
         results = detector.track(frame, conf=conf, persist=True)
         boxes = results[0].boxes
         ids = boxes.id if hasattr(boxes, "id") else None
-        detections = []
+
+        detections: List[Tuple[int, Tuple[int, int, int, int]]] = []
+
         if ids is not None:
             for box, obj_id in zip(boxes.xyxy, ids):
                 x1, y1, x2, y2 = map(int, box.tolist())
                 detections.append((int(obj_id), (x1, y1, x2, y2)))
 
         manager.update(detections)
-        manager.draw(frame)
 
-        cv2.imshow("scene_presence", frame)
-        key = cv2.waitKey(1) & 0xFF
-        if key == ord("q"):
-            break
-        if key == ord("r"):
-            roi = cv2.selectROI("scene_presence", frame, fromCenter=False, showCrosshair=True)
-            if roi != (0, 0, 0, 0):
-                x, y, w, h = map(int, roi)
-                manager.set_region([(x, y), (x + w, y), (x + w, y + h), (x, y + h)])
+
+        if visualize:
+            manager.draw(frame)
+            cv2.imshow("scene_presence", frame)
+            key = cv2.waitKey(1) & 0xFF
+            if key == ord("q"):
+                break
+            if key == ord("r"):
+                poly = select_polygon("scene_presence", frame)
+                if poly:
+                    manager.set_region(poly)
+                    save_region(config_path, poly)
+        else:
+            # When visualization is disabled, simply continue processing frames.
+            pass
 
     cap.release()
-    cv2.destroyAllWindows()
+    if visualize:
+        cv2.destroyAllWindows()
+
 
 
 if __name__ == "__main__":  # pragma: no cover - demo usage
@@ -211,7 +298,21 @@ if __name__ == "__main__":  # pragma: no cover - demo usage
     parser.add_argument("--video", default=0, help="Video source (int or file path)")
     parser.add_argument("--model", default="yolo11s", help="YOLO model name")
     parser.add_argument("--conf", type=float, default=0.5, help="Detection confidence")
+
+    parser.add_argument(
+        "--config", default=str(CONFIG_FILE), help="Path to region config JSON"
+    )
+    parser.add_argument(
+        "--no-display", action="store_true", help="Disable visualization windows"
+    )
     args = parser.parse_args()
 
     src = int(args.video) if str(args.video).isdigit() else args.video
-    run_demo(src, model_name=args.model, conf=args.conf)
+    run_demo(
+        src,
+        model_name=args.model,
+        conf=args.conf,
+        visualize=not args.no_display,
+        config_path=Path(args.config),
+    )
+
