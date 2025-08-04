@@ -3,17 +3,20 @@ from __future__ import annotations
 """Scene-level presence detection with adjustable region and visualization."""
 
 from dataclasses import dataclass
+
 from pathlib import Path
 from typing import Dict, Iterable, List, Tuple
 
 import cv2
 import json
+
 import numpy as np
 
 try:
     from ultralytics import YOLO
 except Exception:  # pragma: no cover - runtime dependency
     YOLO = None
+
 
 
 CONFIG_FILE = Path("scene_presence_config.json")
@@ -68,7 +71,6 @@ def select_polygon(window: str, frame: np.ndarray) -> List[Tuple[int, int]]:
 
     cv2.setMouseCallback(window, lambda *args: None)
     return points
-
 
 @dataclass
 class WorkerState:
@@ -172,6 +174,7 @@ class ScenePresenceManager:
             overlay = frame.copy()
             cv2.fillPoly(overlay, [pts], color=(255, 0, 0))
             cv2.addWeighted(overlay, 0.2, frame, 0.8, 0, frame)
+
             cv2.polylines(frame, [pts], isClosed=True, color=(255, 0, 0), thickness=2)
 
         for oid, state in self.workers.items():
@@ -214,6 +217,7 @@ class ScenePresenceManager:
 
 # ---------------------------------------------------------------------------
 
+
 def run_demo(
     video_source: str | int = 0,
     model_name: str = "yolo11s",
@@ -221,6 +225,7 @@ def run_demo(
     visualize: bool = True,
     config_path: Path = CONFIG_FILE,
 ) -> None:
+
     """Run presence detection demo with adjustable region."""
 
     if YOLO is None:
@@ -231,6 +236,7 @@ def run_demo(
         raise IOError(f"Cannot open {video_source}")
 
     detector = YOLO(model_name)
+
 
     ret, frame = cap.read()
     if not ret:
@@ -244,6 +250,7 @@ def run_demo(
     manager = ScenePresenceManager(region=region)
     cap.set(cv2.CAP_PROP_POS_FRAMES, 0)
 
+
     while True:
         ret, frame = cap.read()
         if not ret:
@@ -252,13 +259,16 @@ def run_demo(
         results = detector.track(frame, conf=conf, persist=True)
         boxes = results[0].boxes
         ids = boxes.id if hasattr(boxes, "id") else None
+
         detections: List[Tuple[int, Tuple[int, int, int, int]]] = []
+
         if ids is not None:
             for box, obj_id in zip(boxes.xyxy, ids):
                 x1, y1, x2, y2 = map(int, box.tolist())
                 detections.append((int(obj_id), (x1, y1, x2, y2)))
 
         manager.update(detections)
+
 
         if visualize:
             manager.draw(frame)
@@ -280,6 +290,7 @@ def run_demo(
         cv2.destroyAllWindows()
 
 
+
 if __name__ == "__main__":  # pragma: no cover - demo usage
     import argparse
 
@@ -287,6 +298,7 @@ if __name__ == "__main__":  # pragma: no cover - demo usage
     parser.add_argument("--video", default=0, help="Video source (int or file path)")
     parser.add_argument("--model", default="yolo11s", help="YOLO model name")
     parser.add_argument("--conf", type=float, default=0.5, help="Detection confidence")
+
     parser.add_argument(
         "--config", default=str(CONFIG_FILE), help="Path to region config JSON"
     )
@@ -303,3 +315,4 @@ if __name__ == "__main__":  # pragma: no cover - demo usage
         visualize=not args.no_display,
         config_path=Path(args.config),
     )
+
