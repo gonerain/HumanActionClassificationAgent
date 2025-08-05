@@ -232,6 +232,8 @@ def run_demo(
     enter_frames: int | None = None,
     leave_frames: int | None = None,
     finish_frames: int | None = None,
+    classes: List[str] | None = None,
+    min_area: int | None = None,
 ) -> None:
 
     """Run presence detection demo with adjustable region."""
@@ -256,6 +258,11 @@ def run_demo(
         "enter_frames": 15,
         "leave_frames": 30,
         "finish_frames": None,
+        # Filter detections: only keep specified classes and discard small boxes.
+        # ``classes`` uses YOLO class names, e.g. ["person"].
+        "classes": ["person"],
+        # Minimum bounding-box area in pixels to keep a detection.
+        "min_area": 4000,
     }
     config = load_config(config_path, default_cfg)
 
@@ -270,6 +277,10 @@ def run_demo(
         config["leave_frames"] = leave_frames
     if finish_frames is not None:
         config["finish_frames"] = finish_frames
+    if classes is not None:
+        config["classes"] = classes
+    if min_area is not None:
+        config["min_area"] = min_area
 
     save_config(config_path, config)  # ensure config file exists
 
@@ -296,8 +307,17 @@ def run_demo(
         detections: List[Tuple[int, Tuple[int, int, int, int]]] = []
 
         if ids is not None:
-            for box, obj_id in zip(boxes.xyxy, ids):
+            names = getattr(detector, "names", {})
+            allowed = set(config.get("classes", []))
+            min_area = int(config.get("min_area", 0))
+            for box, obj_id, cls_id in zip(boxes.xyxy, ids, boxes.cls):
                 x1, y1, x2, y2 = map(int, box.tolist())
+                area = (x2 - x1) * (y2 - y1)
+                class_name = names.get(int(cls_id), str(cls_id)) if names else str(int(cls_id))
+                if allowed and class_name not in allowed:
+                    continue
+                if area < min_area:
+                    continue
                 detections.append((int(obj_id), (x1, y1, x2, y2)))
 
         manager.update(detections)
@@ -335,6 +355,8 @@ if __name__ == "__main__":  # pragma: no cover - demo usage
     parser.add_argument("--enter", type=int, help="Frames required to activate")
     parser.add_argument("--leave", type=int, help="Frames tolerated outside region")
     parser.add_argument("--finish", type=int, help="Max frames in active state")
+    parser.add_argument("--classes", nargs="*", help="Allowed detection classes")
+    parser.add_argument("--min-area", type=int, help="Minimum bbox area to keep")
 
     parser.add_argument(
         "--config", default=str(CONFIG_FILE), help="Path to configuration JSON"
@@ -354,5 +376,7 @@ if __name__ == "__main__":  # pragma: no cover - demo usage
         enter_frames=args.enter,
         leave_frames=args.leave,
         finish_frames=args.finish,
+        classes=args.classes,
+        min_area=args.min_area,
     )
 
