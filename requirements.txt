@@ -7,5 +7,5 @@ scikit-learn
 tqdm
 
 fastapi
-uvicorn
+uvicorn[standard]
 httpx

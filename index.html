@@ -1,0 +1,73 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <title>Scene Presence Monitor</title>
+  <style>
+    body {
+      font-family: sans-serif;
+      background-color: #f2f2f2;
+      margin: 0;
+      padding: 20px;
+    }
+    h1 {
+      color: #333;
+    }
+    #status {
+      margin: 10px 0;
+      font-size: 1.2em;
+      font-weight: bold;
+    }
+    #frame {
+      border: 2px solid #ccc;
+      max-width: 100%;
+      height: auto;
+    }
+    #info {
+      margin-top: 10px;
+      font-size: 1em;
+      color: #555;
+    }
+  </style>
+</head>
+<body>
+  <h1>Scene Presence Monitor</h1>
+  <div id="status">Connecting...</div>
+  <img id="frame" src="" alt="Live Feed">
+  <div id="info"></div>
+
+  <script>
+    const statusDiv = document.getElementById("status");
+    const frameImg = document.getElementById("frame");
+    const infoDiv = document.getElementById("info");
+
+    const socket = new WebSocket("ws://localhost:8000/status");
+
+    socket.onopen = () => {
+      statusDiv.textContent = "✅ Connected to backend";
+    };
+
+    socket.onmessage = (event) => {
+      const data = JSON.parse(event.data);
+      frameImg.src = "data:image/jpeg;base64," + data.frame;
+
+      statusDiv.textContent = data.scene_active
+        ? "🟢 有人在岗"
+        : "🔴 无人在岗";
+
+      infoDiv.innerHTML = `
+        <strong>Active IDs:</strong> ${data.active_ids.join(", ")}<br>
+        <strong>Roll Status:</strong> ${data.roll_status}
+      `;
+    };
+
+    socket.onerror = () => {
+      statusDiv.textContent = "❌ WebSocket error";
+    };
+
+    socket.onclose = () => {
+      statusDiv.textContent = "🔌 WebSocket closed";
+    };
+  </script>
+</body>
+</html>
