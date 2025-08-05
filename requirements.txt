@@ -5,3 +5,6 @@ ultralytics
 torch
 scikit-learn
 tqdm
+
+fastapi
+uvicorn
