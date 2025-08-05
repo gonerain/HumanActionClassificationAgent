@@ -99,3 +99,28 @@ python src/scene_presence.py --video 0 --model yolo11s
 
 运行窗口中按 `r` 可重新绘制监控区域（左键添加顶点，空格或回车结束，Esc 取消），按 `q` 退出。若任一 ID 处于 `active` 状态，界面左上角会显示 `ACTIVE`，否则为 `INACTIVE`。如需在后台运行或关闭可视化，可加 `--no-display` 参数。
 
+
+## 后端服务接口
+
+仓库提供了一个基于 FastAPI 的后端服务 `src/backend_service.py`，用于实时返回场景在岗状态并推送处理后的画面。
+
+### 启动方式
+
+```bash
+uvicorn src.backend_service:app
+```
+
+### 可用接口
+
+- `GET /inference/report`：返回当前在岗人员 ID、场景总体状态以及钢卷状态。
+- `WS /status`：通过 WebSocket 持续发送 JSON 数据，其中 `frame` 字段为 Base64 编码的 JPEG 图像。
+
+前端可直接订阅 `/status` 接口以显示处理后的帧并实时获取在岗信息。
+
+## 运行测试
+
+项目使用 `pytest` 进行测试。运行所有测试：
+
+```bash
+pytest
+```
