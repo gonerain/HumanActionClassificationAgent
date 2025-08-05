@@ -87,7 +87,7 @@ PY
 ## 场景级人员在岗检测
 
 
-脚本 `src/scene_presence.py` 提供了基于状态机的多人在岗检测逻辑，并支持交互式调整**任意多边形**监控区域。程序会根据各 ID 在区域内的连续帧数判断其状态（pending/active/paused/finished），同时在窗口中绘制状态色框和场景总体状态。监控区域会以半透明色块高亮显示，并将调整后的多边形保存到 `scene_presence_config.json`，下次运行时自动加载。默认监控区域为整张画面的四边形。
+脚本 `src/scene_presence.py` 提供了基于状态机的多人在岗检测逻辑，并支持交互式调整**任意多边形**监控区域。程序会根据各 ID 在区域内的连续帧数判断其状态（pending/active/paused/finished），同时在窗口中绘制状态色框和场景总体状态。监控区域会以半透明色块高亮显示，并将调整后的多边形保存到 `scene_presence_config.json`，下次运行时自动加载。默认监控区域为整张画面的四边形。配置文件还会记录检测模型、置信度及状态机阈值（`enter_frames`、`leave_frames`、`finish_frames`），命令行参数会覆盖这些值并写回配置文件。
 
 
 运行示例：
