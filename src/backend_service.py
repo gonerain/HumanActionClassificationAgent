@@ -11,7 +11,7 @@ import cv2
 import numpy as np
 from fastapi import FastAPI, WebSocket, WebSocketDisconnect
 
-from scene_presence import ScenePresenceManager
+from src.scene_presence import ScenePresenceManager
 
 try:  # pragma: no cover - optional runtime dependency
     from ultralytics import YOLO
