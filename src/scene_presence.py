@@ -236,12 +236,20 @@ def run_demo(
     min_area: int | None = None,
 ) -> None:
 
-    """Run presence detection demo with adjustable region."""
+    """Run presence detection demo with adjustable region.
+
+    ``video_source`` may be a camera index, a local file path or an RTSP URL.
+    """
 
     if YOLO is None:
         raise ImportError("ultralytics is required for presence detection")
 
-    cap = cv2.VideoCapture(video_source)
+    is_rtsp = isinstance(video_source, str) and video_source.startswith("rtsp://")
+    # ``cv2.CAP_FFMPEG`` is more robust for network streams like RTSP.
+    if is_rtsp:
+        cap = cv2.VideoCapture(video_source, cv2.CAP_FFMPEG)
+    else:
+        cap = cv2.VideoCapture(video_source)
     if not cap.isOpened():
         raise IOError(f"Cannot open {video_source}")
 
@@ -292,7 +300,8 @@ def run_demo(
         leave_frames=int(config["leave_frames"]),
         finish_frames=config.get("finish_frames"),
     )
-    cap.set(cv2.CAP_PROP_POS_FRAMES, 0)
+    if not is_rtsp:
+        cap.set(cv2.CAP_PROP_POS_FRAMES, 0)
 
 
     while True:
@@ -349,7 +358,11 @@ if __name__ == "__main__":  # pragma: no cover - demo usage
     import argparse
 
     parser = argparse.ArgumentParser(description="Scene-level presence detection demo")
-    parser.add_argument("--video", default=0, help="Video source (int or file path)")
+    parser.add_argument(
+        "--video",
+        default=0,
+        help="Video source (int, file path, or RTSP URL)",
+    )
     parser.add_argument("--model", help="YOLO model name")
     parser.add_argument("--conf", type=float, help="Detection confidence")
     parser.add_argument("--enter", type=int, help="Frames required to activate")
