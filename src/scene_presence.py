@@ -123,9 +123,10 @@ class ScenePresenceManager:
         if self.region is None:
             return True
         x1, y1, x2, y2 = bbox
-        cx, cy = (x1 + x2) // 2, (y1 + y2) // 2
+        foot_x, foot_y = (x1 + x2) // 2, y2  # 底边中心点
         pts = np.array(self.region, dtype=np.int32)
-        return cv2.pointPolygonTest(pts, (cx, cy), False) >= 0
+        return cv2.pointPolygonTest(pts, (foot_x, foot_y), False) >= 0
+
 
     # ------------------------------------------------------------------
     def update(self, detections: Iterable[Tuple[int, Tuple[int, int, int, int]]]) -> None:
@@ -140,6 +141,7 @@ class ScenePresenceManager:
             if inside:
                 state.inside_frames += 1
                 state.outside_frames = 0
+                print(state.inside_frames)
                 if state.status in {"inactive", "paused"}:
                     state.status = "pending"
                 if state.status == "pending" and state.inside_frames >= self.enter_frames:
