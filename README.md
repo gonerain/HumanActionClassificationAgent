@@ -102,12 +102,12 @@ python src/scene_presence.py --video 0 --model yolo11s
 
 ## 后端服务接口
 
-仓库提供了一个基于 FastAPI 的后端服务 `src/backend_service.py`，用于实时返回场景在岗状态并推送处理后的画面。
+仓库提供了一个基于 FastAPI 的后端服务 `src/backend/service.py`，用于实时返回场景在岗状态并推送处理后的画面。
 
 ### 启动方式
 
 ```bash
-uvicorn src.backend_service:app
+uvicorn backend.service:app
 ```
 
 ### 可用接口
