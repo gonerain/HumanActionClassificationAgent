@@ -5,11 +5,13 @@ from __future__ import annotations
 import asyncio
 import base64
 import threading
+from pathlib import Path
 from typing import Dict, List, Tuple
 
 import cv2
 import numpy as np
 from fastapi import FastAPI, WebSocket, WebSocketDisconnect
+from fastapi.responses import HTMLResponse
 
 from scene_presence import ScenePresenceManager
 
@@ -118,6 +120,33 @@ def inference_report() -> Dict[str, object]:
     data = processor.state()
     data["roll_status"] = get_current_roll_status()
     return data
+
+
+@app.get("/")
+def index() -> HTMLResponse:
+    """Serve a minimal frontend to view camera feed and results."""
+
+    root = Path(__file__).resolve().parents[2]
+    html_path = root / "index.html"
+    return HTMLResponse(html_path.read_text(encoding="utf-8"))
+
+
+@app.get("/snapshot")
+def snapshot() -> Dict[str, object]:
+    """Return one processed frame and its recognition results."""
+
+    frame = capture_worker.latest_frame
+    if frame is None:
+        return {"detail": "no frame"}
+    processed = processor.process(frame.copy())
+    ret, buf = cv2.imencode(".jpg", processed)
+    if not ret:
+        return {"detail": "encode_failed"}
+    b64 = base64.b64encode(buf).decode("ascii")
+    payload = processor.state()
+    payload["roll_status"] = get_current_roll_status()
+    payload["frame"] = b64
+    return payload
 
 
 @app.websocket("/status")
