@@ -41,7 +41,8 @@
     const frameImg = document.getElementById("frame");
     const infoDiv = document.getElementById("info");
 
-    const socket = new WebSocket("ws://localhost:8000/status");
+    const wsProto = location.protocol === "https:" ? "wss" : "ws";
+    const socket = new WebSocket(`${wsProto}://${location.host}/status`);
 
     socket.onopen = () => {
       statusDiv.textContent = "✅ Connected to backend";
