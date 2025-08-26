@@ -22,7 +22,7 @@ def load_config(path: Path | None = None, default: Dict[str, Any] | None = None)
     """
     cfg_path = path or CONFIG_FILE
     config: Dict[str, Any] = {
-        "source": 0,
+        "source": None,
         "region": None,
     }
     if default:

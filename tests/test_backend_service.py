@@ -31,9 +31,10 @@ def test_inference_report(monkeypatch):
     sys.path.append(str(Path(__file__).resolve().parents[1] / "src"))
     backend = importlib.import_module("backend.service")
 
-    # stop background thread and stub processor/state for deterministic test
-    backend.capture_worker.stop()
-    backend.capture_worker.latest_frame = np.zeros((4, 4, 3), dtype=np.uint8)
+    backend.set_source(0)
+    if backend.capture_worker is not None:
+        backend.capture_worker.stop()
+        backend.capture_worker.latest_frame = np.zeros((4, 4, 3), dtype=np.uint8)
 
     class DummyProcessor:
         @staticmethod
