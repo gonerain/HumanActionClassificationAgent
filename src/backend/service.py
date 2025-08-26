@@ -6,7 +6,7 @@ import asyncio
 import base64
 import threading
 from pathlib import Path
-from typing import Dict, List, Tuple
+from typing import Any, Dict, List, Tuple
 
 import cv2
 import numpy as np
@@ -14,6 +14,8 @@ from fastapi import FastAPI, WebSocket, WebSocketDisconnect
 from fastapi.responses import HTMLResponse
 
 from scene_presence import ScenePresenceManager
+
+from .config import CONFIG_FILE, load_config, save_config
 
 try:  # pragma: no cover - optional runtime dependency
     from ultralytics import YOLO
@@ -68,8 +70,10 @@ class VideoCaptureWorker(threading.Thread):
 class FrameProcessor:
     """Apply detection and update presence state."""
 
-    def __init__(self, model_name: str = "yolo11s", conf: float = 0.5) -> None:
-        self.manager = ScenePresenceManager()
+    def __init__(
+        self, model_name: str = "yolo11s", conf: float = 0.5, region: List[Tuple[int, int]] | None = None
+    ) -> None:
+        self.manager = ScenePresenceManager(region=region)
         self.conf = conf
         self.detector = YOLO(model_name) if YOLO is not None else None
 
@@ -103,9 +107,11 @@ class FrameProcessor:
 # FastAPI application
 
 
-capture_worker = VideoCaptureWorker()
+config = load_config(CONFIG_FILE)
+
+capture_worker = VideoCaptureWorker(config.get("source", 0))
 capture_worker.start()
-processor = FrameProcessor()
+processor = FrameProcessor(region=config.get("region"))
 app = FastAPI()
 
 
@@ -147,6 +153,26 @@ def snapshot() -> Dict[str, object]:
     payload["roll_status"] = get_current_roll_status()
     payload["frame"] = b64
     return payload
+
+
+@app.post("/config")
+def update_config(payload: Dict[str, Any], save: bool = False) -> Dict[str, str]:
+    """Update runtime configuration.
+
+    ``payload`` may contain ``source`` and ``region``. When ``save`` is ``True``
+    the updated configuration is persisted to disk. By default, the config file
+    is untouched to avoid pollution.
+    """
+
+    if "region" in payload and payload["region"] is not None:
+        region = [tuple(map(int, pt)) for pt in payload["region"]]
+        processor.manager.set_region(region)
+        config["region"] = region
+    if "source" in payload:
+        config["source"] = payload["source"]
+    if save:
+        save_config(config, CONFIG_FILE)
+    return {"detail": "updated"}
 
 
 @app.websocket("/status")
