@@ -13,6 +13,8 @@ import numpy as np
 from fastapi import FastAPI, WebSocket, WebSocketDisconnect
 from fastapi.responses import HTMLResponse
 
+import time
+
 from scene_presence import ScenePresenceManager
 
 from .config import CONFIG_FILE, load_config, save_config
@@ -76,6 +78,7 @@ class FrameProcessor:
         self.manager = ScenePresenceManager(region=region)
         self.conf = conf
         self.detector = YOLO(model_name) if YOLO is not None else None
+        self._last_ts = time.time() * 1000.0
 
     def process(self, frame: np.ndarray) -> np.ndarray:
         """Run detection and draw status on ``frame``."""
@@ -94,7 +97,13 @@ class FrameProcessor:
                         continue
                     x1, y1, x2, y2 = map(int, box.tolist())
                     detections.append((int(obj_id), (x1, y1, x2, y2)))
-        self.manager.update(detections)
+        now = time.time() * 1000.0
+        elapsed_ms = now - self._last_ts
+        if elapsed_ms < 0:
+            elapsed_ms = 0.0
+        self._last_ts = now
+
+        self.manager.update(detections, elapsed_ms)
         self.manager.draw(frame)
         return frame
 

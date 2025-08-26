@@ -87,7 +87,7 @@ PY
 ## 场景级人员在岗检测
 
 
-脚本 `src/scene_presence.py` 提供了基于状态机的多人在岗检测逻辑，并支持交互式调整**任意多边形**监控区域。程序会根据各 ID 在区域内的连续帧数判断其状态（pending/active/paused/finished），同时在窗口中绘制状态色框和场景总体状态。监控区域会以半透明色块高亮显示，并将调整后的多边形保存到 `scene_presence_config.json`，下次运行时自动加载。默认监控区域为整张画面的四边形。配置文件还会记录检测模型、置信度及状态机阈值（`enter_frames`、`leave_frames`、`finish_frames`），命令行参数会覆盖这些值并写回配置文件。
+脚本 `src/scene_presence.py` 提供了基于状态机的多人在岗检测逻辑，并支持交互式调整**任意多边形**监控区域。程序会根据各 ID 在区域内的**驻留时间**判断其状态（pending/active/paused/finished），同时在窗口中绘制状态色框和场景总体状态。监控区域会以半透明色块高亮显示，并将调整后的多边形保存到 `scene_presence_config.json`，下次运行时自动加载。默认监控区域为整张画面的四边形。配置文件记录检测模型、置信度及时间阈值，这些阈值位于 `timing` 字段下（`enter_s`、`leave_s`、`finish_s`），命令行参数可覆盖这些值并写回配置文件。支持同时以毫秒或秒传入阈值（例如 `--enter-ms 500` 或 `--enter-s 0.5`），配置文件的字段说明见 `scene_presence_config.schema.json`。
 
 如仅需快速标定区域，可运行 `src/roi_calibrator.py` 读取视频流首帧并交互式绘制多边形，结果会写入同一个 `scene_presence_config.json`，后续 `scene_presence.py` 会直接使用该区域：
 

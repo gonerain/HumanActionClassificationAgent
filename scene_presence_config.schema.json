@@ -1,0 +1,42 @@
+{
+  "$schema": "http://json-schema.org/draft-07/schema#",
+  "title": "Scene Presence Config",
+  "type": "object",
+  "properties": {
+    "region": {
+      "type": "array",
+      "items": {
+        "type": "array",
+        "items": {"type": "integer"},
+        "minItems": 2,
+        "maxItems": 2
+      }
+    },
+    "model_name": {"type": "string"},
+    "conf": {"type": "number"},
+    "timing": {
+      "type": "object",
+      "properties": {
+        "enter_s": {"type": "number"},
+        "leave_s": {"type": "number"},
+        "finish_s": {"type": ["number", "null"]}
+      },
+      "required": ["enter_s", "leave_s"],
+      "additionalProperties": false
+    },
+    "classes": {
+      "type": "array",
+      "items": {"type": "string"}
+    },
+    "min_area": {"type": "integer"}
+  },
+  "required": [
+    "region",
+    "model_name",
+    "conf",
+    "timing",
+    "classes",
+    "min_area"
+  ],
+  "additionalProperties": false
+}

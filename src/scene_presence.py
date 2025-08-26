@@ -9,6 +9,7 @@ from typing import Dict, Iterable, List, Tuple
 
 import cv2
 import json
+import time
 
 import numpy as np
 
@@ -82,9 +83,9 @@ class WorkerState:
     """State machine for a single worker."""
 
     status: str = "inactive"
-    inside_frames: int = 0
-    outside_frames: int = 0
-    total_frames: int = 0
+    inside_ms: float = 0.0
+    outside_ms: float = 0.0
+    total_ms: float = 0.0
     bbox: Tuple[int, int, int, int] | None = None
 
 
@@ -94,22 +95,36 @@ class ScenePresenceManager:
     def __init__(
         self,
         region: List[Tuple[int, int]] | None = None,
-        enter_frames: int = 15,
-        leave_frames: int = 30,
-        finish_frames: int | None = None,
+        *,
+        enter_ms: float | None = None,
+        leave_ms: float | None = None,
+        finish_ms: float | None = None,
+        enter_s: float | None = None,
+        leave_s: float | None = None,
+        finish_s: float | None = None,
     ) -> None:
-        """Initialize manager.
+        """Initialize manager with time-based thresholds.
 
         Args:
-            region: Polygon region as list of points. None means full frame.
-            enter_frames: Frames required to switch from ``pending`` to ``active``.
-            leave_frames: Allowed missing frames before ``inactive``.
-            finish_frames: Optional max frames in ``active`` before ``finished``.
+            region: Polygon region as list of points. ``None`` means full frame.
+            enter_ms: Milliseconds required to switch from ``pending`` to ``active``.
+            leave_ms: Milliseconds tolerated outside the region before ``inactive``.
+            finish_ms: Optional max milliseconds in ``active`` before ``finished``.
+            enter_s: Same as ``enter_ms`` but specified in seconds.
+            leave_s: Same as ``leave_ms`` but specified in seconds.
+            finish_s: Same as ``finish_ms`` but specified in seconds.
         """
+        if enter_ms is None and enter_s is not None:
+            enter_ms = enter_s * 1000.0
+        if leave_ms is None and leave_s is not None:
+            leave_ms = leave_s * 1000.0
+        if finish_ms is None and finish_s is not None:
+            finish_ms = finish_s * 1000.0
+
         self.region = region
-        self.enter_frames = enter_frames
-        self.leave_frames = leave_frames
-        self.finish_frames = finish_frames
+        self.enter_ms = float(enter_ms if enter_ms is not None else 500.0)
+        self.leave_ms = float(leave_ms if leave_ms is not None else 1000.0)
+        self.finish_ms = float(finish_ms) if finish_ms is not None else None
         self.workers: Dict[int, WorkerState] = {}
 
     # ------------------------------------------------------------------
@@ -129,7 +144,11 @@ class ScenePresenceManager:
 
 
     # ------------------------------------------------------------------
-    def update(self, detections: Iterable[Tuple[int, Tuple[int, int, int, int]]]) -> None:
+    def update(
+        self,
+        detections: Iterable[Tuple[int, Tuple[int, int, int, int]]],
+        elapsed_ms: float,
+    ) -> None:
         """Update state machine with current frame detections."""
 
         seen: set[int] = set()
@@ -139,21 +158,20 @@ class ScenePresenceManager:
             state = self.workers.setdefault(oid, WorkerState())
             state.bbox = bbox  # type: ignore[attr-defined]
             if inside:
-                state.inside_frames += 1
-                state.outside_frames = 0
-                print(state.inside_frames)
+                state.inside_ms += elapsed_ms
+                state.outside_ms = 0.0
                 if state.status in {"inactive", "paused"}:
                     state.status = "pending"
-                if state.status == "pending" and state.inside_frames >= self.enter_frames:
+                if state.status == "pending" and state.inside_ms >= self.enter_ms:
                     state.status = "active"
                 if state.status == "active":
-                    state.total_frames += 1
-                    if self.finish_frames and state.total_frames >= self.finish_frames:
+                    state.total_ms += elapsed_ms
+                    if self.finish_ms and state.total_ms >= self.finish_ms:
                         state.status = "finished"
             else:
-                state.inside_frames = 0
-                state.outside_frames += 1
-                if state.outside_frames > self.leave_frames:
+                state.inside_ms = 0.0
+                state.outside_ms += elapsed_ms
+                if state.outside_ms > self.leave_ms:
                     state.status = "inactive"
                 elif state.status == "active":
                     state.status = "paused"
@@ -162,8 +180,8 @@ class ScenePresenceManager:
         for oid in list(self.workers.keys()):
             if oid not in seen:
                 state = self.workers[oid]
-                state.outside_frames += 1
-                if state.outside_frames > self.leave_frames:
+                state.outside_ms += elapsed_ms
+                if state.outside_ms > self.leave_ms:
                     self.workers.pop(oid)
 
     # ------------------------------------------------------------------
@@ -231,9 +249,12 @@ def run_demo(
     conf: float | None = None,
     visualize: bool = True,
     config_path: Path = CONFIG_FILE,
-    enter_frames: int | None = None,
-    leave_frames: int | None = None,
-    finish_frames: int | None = None,
+    enter_ms: float | None = None,
+    leave_ms: float | None = None,
+    finish_ms: float | None = None,
+    enter_s: float | None = None,
+    leave_s: float | None = None,
+    finish_s: float | None = None,
     classes: List[str] | None = None,
     min_area: int | None = None,
 ) -> None:
@@ -265,9 +286,7 @@ def run_demo(
         "region": [(0, 0), (w - 1, 0), (w - 1, h - 1), (0, h - 1)],
         "model_name": "yolo11s",
         "conf": 0.5,
-        "enter_frames": 15,
-        "leave_frames": 30,
-        "finish_frames": None,
+        "timing": {"enter_s": 0.5, "leave_s": 1.0, "finish_s": None},
         # Filter detections: only keep specified classes and discard small boxes.
         # ``classes`` uses YOLO class names, e.g. ["person"].
         "classes": ["person"],
@@ -281,12 +300,19 @@ def run_demo(
         config["model_name"] = model_name
     if conf is not None:
         config["conf"] = conf
-    if enter_frames is not None:
-        config["enter_frames"] = enter_frames
-    if leave_frames is not None:
-        config["leave_frames"] = leave_frames
-    if finish_frames is not None:
-        config["finish_frames"] = finish_frames
+    timing = config.setdefault("timing", {})
+    if enter_ms is not None:
+        timing["enter_s"] = enter_ms / 1000.0
+    if leave_ms is not None:
+        timing["leave_s"] = leave_ms / 1000.0
+    if finish_ms is not None:
+        timing["finish_s"] = finish_ms / 1000.0
+    if enter_s is not None:
+        timing["enter_s"] = enter_s
+    if leave_s is not None:
+        timing["leave_s"] = leave_s
+    if finish_s is not None:
+        timing["finish_s"] = finish_s
     if classes is not None:
         config["classes"] = classes
     if min_area is not None:
@@ -296,20 +322,32 @@ def run_demo(
 
     detector = YOLO(config["model_name"])
     conf = float(config["conf"])
+    timing = config.get("timing", {})
     manager = ScenePresenceManager(
         region=config["region"],
-        enter_frames=int(config["enter_frames"]),
-        leave_frames=int(config["leave_frames"]),
-        finish_frames=config.get("finish_frames"),
+        enter_s=float(timing.get("enter_s", 0.5)),
+        leave_s=float(timing.get("leave_s", 1.0)),
+        finish_s=timing.get("finish_s"),
     )
     if not is_rtsp:
         cap.set(cv2.CAP_PROP_POS_FRAMES, 0)
 
+    last_ts = cap.get(cv2.CAP_PROP_POS_MSEC)
+    if last_ts <= 0:
+        last_ts = time.time() * 1000.0
 
     while True:
         ret, frame = cap.read()
         if not ret:
             break
+
+        timestamp = cap.get(cv2.CAP_PROP_POS_MSEC)
+        if timestamp <= 0:
+            timestamp = time.time() * 1000.0
+        elapsed_ms = timestamp - last_ts
+        if elapsed_ms < 0:
+            elapsed_ms = 0.0
+        last_ts = timestamp
 
         results = detector.track(frame, conf=conf, persist=True)
         boxes = results[0].boxes
@@ -331,7 +369,7 @@ def run_demo(
                     continue
                 detections.append((int(obj_id), (x1, y1, x2, y2)))
 
-        manager.update(detections)
+        manager.update(detections, elapsed_ms)
 
 
         if visualize:
@@ -367,9 +405,12 @@ if __name__ == "__main__":  # pragma: no cover - demo usage
     )
     parser.add_argument("--model", help="YOLO model name")
     parser.add_argument("--conf", type=float, help="Detection confidence")
-    parser.add_argument("--enter", type=int, help="Frames required to activate")
-    parser.add_argument("--leave", type=int, help="Frames tolerated outside region")
-    parser.add_argument("--finish", type=int, help="Max frames in active state")
+    parser.add_argument("--enter-ms", type=float, help="Milliseconds required to activate")
+    parser.add_argument("--leave-ms", type=float, help="Milliseconds tolerated outside region")
+    parser.add_argument("--finish-ms", type=float, help="Max milliseconds in active state")
+    parser.add_argument("--enter-s", type=float, help="Seconds required to activate")
+    parser.add_argument("--leave-s", type=float, help="Seconds tolerated outside region")
+    parser.add_argument("--finish-s", type=float, help="Max seconds in active state")
     parser.add_argument("--classes", nargs="*", help="Allowed detection classes")
     parser.add_argument("--min-area", type=int, help="Minimum bbox area to keep")
 
@@ -388,9 +429,12 @@ if __name__ == "__main__":  # pragma: no cover - demo usage
         conf=args.conf,
         visualize=not args.no_display,
         config_path=Path(args.config),
-        enter_frames=args.enter,
-        leave_frames=args.leave,
-        finish_frames=args.finish,
+        enter_ms=args.enter_ms,
+        leave_ms=args.leave_ms,
+        finish_ms=args.finish_ms,
+        enter_s=args.enter_s,
+        leave_s=args.leave_s,
+        finish_s=args.finish_s,
         classes=args.classes,
         min_area=args.min_area,
     )
