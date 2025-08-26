@@ -85,8 +85,13 @@ class FrameProcessor:
             results = self.detector.track(frame, conf=self.conf, persist=True)
             boxes = results[0].boxes
             ids = boxes.id if hasattr(boxes, "id") else None
-            if ids is not None:
-                for box, obj_id in zip(boxes.xyxy, ids):
+            classes = boxes.cls if hasattr(boxes, "cls") else None
+            if ids is not None and classes is not None:
+                names = self.detector.names  # dict: {class_id: "name"}
+                for box, obj_id, cls_id in zip(boxes.xyxy, ids, classes):
+                    class_name = names.get(int(cls_id), str(cls_id))
+                    if class_name != "person":
+                        continue
                     x1, y1, x2, y2 = map(int, box.tolist())
                     detections.append((int(obj_id), (x1, y1, x2, y2)))
         self.manager.update(detections)
@@ -109,8 +114,32 @@ class FrameProcessor:
 
 config = load_config(CONFIG_FILE)
 
-capture_worker = VideoCaptureWorker(config.get("source", 0))
-capture_worker.start()
+capture_worker: VideoCaptureWorker | None = None
+
+
+def set_source(source: int | str | None) -> None:
+    """(Re)start the video capture worker with ``source``.
+
+    When ``source`` is ``None`` or the stream fails to open, ``capture_worker``
+    becomes ``None`` and the backend continues running without frames.
+    """
+
+    global capture_worker
+    if capture_worker is not None:
+        capture_worker.stop()
+        capture_worker = None
+    if source is not None:
+        try:
+            worker = VideoCaptureWorker(source)
+        except Exception:
+            capture_worker = None
+        else:
+            worker.start()
+            capture_worker = worker
+    config["source"] = source
+
+
+set_source(config.get("source"))
 processor = FrameProcessor(region=config.get("region"))
 app = FastAPI()
 
@@ -119,7 +148,7 @@ app = FastAPI()
 def inference_report() -> Dict[str, object]:
     """Return scene presence report."""
 
-    frame = capture_worker.latest_frame
+    frame = capture_worker.latest_frame if capture_worker else None
     if frame is None:
         return {"detail": "no frame"}
     processor.process(frame.copy())
@@ -141,7 +170,7 @@ def index() -> HTMLResponse:
 def snapshot() -> Dict[str, object]:
     """Return one processed frame and its recognition results."""
 
-    frame = capture_worker.latest_frame
+    frame = capture_worker.latest_frame if capture_worker else None
     if frame is None:
         return {"detail": "no frame"}
     processed = processor.process(frame.copy())
@@ -169,7 +198,7 @@ def update_config(payload: Dict[str, Any], save: bool = False) -> Dict[str, str]
         processor.manager.set_region(region)
         config["region"] = region
     if "source" in payload:
-        config["source"] = payload["source"]
+        set_source(payload["source"])
     if save:
         save_config(config, CONFIG_FILE)
     return {"detail": "updated"}
@@ -182,7 +211,7 @@ async def websocket_endpoint(ws: WebSocket) -> None:
     await ws.accept()
     try:
         while True:
-            frame = capture_worker.latest_frame
+            frame = capture_worker.latest_frame if capture_worker else None
             if frame is None:
                 await asyncio.sleep(0.1)
                 continue
