@@ -85,8 +85,13 @@ class FrameProcessor:
             results = self.detector.track(frame, conf=self.conf, persist=True)
             boxes = results[0].boxes
             ids = boxes.id if hasattr(boxes, "id") else None
-            if ids is not None:
-                for box, obj_id in zip(boxes.xyxy, ids):
+            classes = boxes.cls if hasattr(boxes, "cls") else None
+            if ids is not None and classes is not None:
+                names = self.detector.names  # dict: {class_id: "name"}
+                for box, obj_id, cls_id in zip(boxes.xyxy, ids, classes):
+                    class_name = names.get(int(cls_id), str(cls_id))
+                    if class_name != "person":
+                        continue
                     x1, y1, x2, y2 = map(int, box.tolist())
                     detections.append((int(obj_id), (x1, y1, x2, y2)))
         self.manager.update(detections)
