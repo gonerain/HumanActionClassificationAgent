@@ -286,9 +286,7 @@ def run_demo(
         "region": [(0, 0), (w - 1, 0), (w - 1, h - 1), (0, h - 1)],
         "model_name": "yolo11s",
         "conf": 0.5,
-        "enter_ms": 500.0,
-        "leave_ms": 1000.0,
-        "finish_ms": None,
+        "timing": {"enter_s": 0.5, "leave_s": 1.0, "finish_s": None},
         # Filter detections: only keep specified classes and discard small boxes.
         # ``classes`` uses YOLO class names, e.g. ["person"].
         "classes": ["person"],
@@ -302,18 +300,19 @@ def run_demo(
         config["model_name"] = model_name
     if conf is not None:
         config["conf"] = conf
+    timing = config.setdefault("timing", {})
     if enter_ms is not None:
-        config["enter_ms"] = enter_ms
+        timing["enter_s"] = enter_ms / 1000.0
     if leave_ms is not None:
-        config["leave_ms"] = leave_ms
+        timing["leave_s"] = leave_ms / 1000.0
     if finish_ms is not None:
-        config["finish_ms"] = finish_ms
+        timing["finish_s"] = finish_ms / 1000.0
     if enter_s is not None:
-        config["enter_ms"] = enter_s * 1000.0
+        timing["enter_s"] = enter_s
     if leave_s is not None:
-        config["leave_ms"] = leave_s * 1000.0
+        timing["leave_s"] = leave_s
     if finish_s is not None:
-        config["finish_ms"] = finish_s * 1000.0
+        timing["finish_s"] = finish_s
     if classes is not None:
         config["classes"] = classes
     if min_area is not None:
@@ -323,11 +322,12 @@ def run_demo(
 
     detector = YOLO(config["model_name"])
     conf = float(config["conf"])
+    timing = config.get("timing", {})
     manager = ScenePresenceManager(
         region=config["region"],
-        enter_ms=float(config["enter_ms"]),
-        leave_ms=float(config["leave_ms"]),
-        finish_ms=config.get("finish_ms"),
+        enter_s=float(timing.get("enter_s", 0.5)),
+        leave_s=float(timing.get("leave_s", 1.0)),
+        finish_s=timing.get("finish_s"),
     )
     if not is_rtsp:
         cap.set(cv2.CAP_PROP_POS_FRAMES, 0)

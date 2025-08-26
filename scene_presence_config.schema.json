@@ -14,9 +14,16 @@
     },
     "model_name": {"type": "string"},
     "conf": {"type": "number"},
-    "enter_ms": {"type": "number"},
-    "leave_ms": {"type": "number"},
-    "finish_ms": {"type": ["number", "null"]},
+    "timing": {
+      "type": "object",
+      "properties": {
+        "enter_s": {"type": "number"},
+        "leave_s": {"type": "number"},
+        "finish_s": {"type": ["number", "null"]}
+      },
+      "required": ["enter_s", "leave_s"],
+      "additionalProperties": false
+    },
     "classes": {
       "type": "array",
       "items": {"type": "string"}
@@ -27,8 +34,7 @@
     "region",
     "model_name",
     "conf",
-    "enter_ms",
-    "leave_ms",
+    "timing",
     "classes",
     "min_area"
   ],
