@@ -1,3 +1,4 @@
+import importlib
 import sys
 import time
 import types
@@ -29,7 +30,7 @@ def test_camera_registration_and_health(monkeypatch):
     monkeypatch.setitem(sys.modules, "cv2", dummy_cv2)
 
     sys.path.append(str(Path(__file__).resolve().parents[1] / "src"))
-    ingest_gateway = __import__("ingest_gateway")
+    ingest_gateway = importlib.import_module("ingest.gateway")
 
     client = TestClient(ingest_gateway.app)
 

@@ -29,11 +29,11 @@ def test_inference_report(monkeypatch):
     monkeypatch.setitem(sys.modules, "cv2", dummy_cv2)
 
     sys.path.append(str(Path(__file__).resolve().parents[1] / "src"))
-    backend_service = importlib.import_module("backend_service")
+    backend = importlib.import_module("backend.service")
 
     # stop background thread and stub processor/state for deterministic test
-    backend_service.capture_worker.stop()
-    backend_service.capture_worker.latest_frame = np.zeros((4, 4, 3), dtype=np.uint8)
+    backend.capture_worker.stop()
+    backend.capture_worker.latest_frame = np.zeros((4, 4, 3), dtype=np.uint8)
 
     class DummyProcessor:
         @staticmethod
@@ -44,9 +44,9 @@ def test_inference_report(monkeypatch):
         def state():
             return {"active_ids": [], "scene_active": False}
 
-    backend_service.processor = DummyProcessor()
+    backend.processor = DummyProcessor()
 
-    client = TestClient(backend_service.app)
+    client = TestClient(backend.app)
     resp = client.get("/inference/report")
     assert resp.status_code == 200
     data = resp.json()
