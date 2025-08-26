@@ -28,6 +28,19 @@
       font-size: 1em;
       color: #555;
     }
+    section {
+      margin-top: 20px;
+    }
+    button {
+      padding: 6px 12px;
+      margin-right: 6px;
+    }
+    pre {
+      background: #fff;
+      padding: 10px;
+      border: 1px solid #ccc;
+      overflow-x: auto;
+    }
   </style>
 </head>
 <body>
@@ -36,10 +49,42 @@
   <img id="frame" src="" alt="Live Feed">
   <div id="info"></div>
 
+  <section id="snapshotSection">
+    <h2>Snapshot</h2>
+    <button id="snapshotBtn">Fetch Snapshot</button>
+    <img id="snapshot" src="" alt="Snapshot" style="display:none; border:2px solid #ccc; max-width:100%; height:auto;">
+    <pre id="snapshotInfo"></pre>
+  </section>
+
+  <section id="reportSection">
+    <h2>Inference Report</h2>
+    <button id="reportBtn">Fetch Report</button>
+    <pre id="reportInfo"></pre>
+  </section>
+
+  <section id="configSection">
+    <h2>Update Config</h2>
+    <input type="text" id="sourceInput" placeholder="Video source">
+    <input type="text" id="regionInput" placeholder='Region JSON e.g. [[0,0],[100,0]]'>
+    <label><input type="checkbox" id="saveConfig"> Save to disk</label>
+    <button id="configBtn">Apply</button>
+    <pre id="configStatus"></pre>
+  </section>
+
   <script>
     const statusDiv = document.getElementById("status");
     const frameImg = document.getElementById("frame");
     const infoDiv = document.getElementById("info");
+    const snapshotBtn = document.getElementById("snapshotBtn");
+    const snapshotImg = document.getElementById("snapshot");
+    const snapshotInfo = document.getElementById("snapshotInfo");
+    const reportBtn = document.getElementById("reportBtn");
+    const reportInfo = document.getElementById("reportInfo");
+    const sourceInput = document.getElementById("sourceInput");
+    const regionInput = document.getElementById("regionInput");
+    const saveConfig = document.getElementById("saveConfig");
+    const configBtn = document.getElementById("configBtn");
+    const configStatus = document.getElementById("configStatus");
 
     const wsProto = location.protocol === "https:" ? "wss" : "ws";
     const socket = new WebSocket(`${wsProto}://${location.host}/status`);
@@ -68,6 +113,48 @@
 
     socket.onclose = () => {
       statusDiv.textContent = "🔌 WebSocket closed";
+    };
+
+    snapshotBtn.onclick = async () => {
+      const resp = await fetch("/snapshot");
+      const data = await resp.json();
+      if (data.frame) {
+        snapshotImg.src = "data:image/jpeg;base64," + data.frame;
+        snapshotImg.style.display = "block";
+      }
+      snapshotInfo.textContent = JSON.stringify(data, null, 2);
+    };
+
+    reportBtn.onclick = async () => {
+      const resp = await fetch("/inference/report");
+      const data = await resp.json();
+      reportInfo.textContent = JSON.stringify(data, null, 2);
+    };
+
+    configBtn.onclick = async () => {
+      const payload = {};
+      const srcVal = sourceInput.value.trim();
+      if (srcVal) {
+        payload.source = isNaN(Number(srcVal)) ? srcVal : Number(srcVal);
+      }
+      const regionVal = regionInput.value.trim();
+      if (regionVal) {
+        try {
+          payload.region = JSON.parse(regionVal);
+        } catch (e) {
+          configStatus.textContent = "Invalid region JSON";
+          return;
+        }
+      }
+      const params = new URLSearchParams();
+      if (saveConfig.checked) params.set("save", "true");
+      const resp = await fetch(`/config?${params.toString()}`, {
+        method: "POST",
+        headers: {"Content-Type": "application/json"},
+        body: JSON.stringify(payload)
+      });
+      const data = await resp.json();
+      configStatus.textContent = JSON.stringify(data, null, 2);
     };
   </script>
 </body>
