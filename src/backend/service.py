@@ -78,7 +78,7 @@ class FrameProcessor:
         self.manager = ScenePresenceManager(region=region)
         self.conf = conf
         self.detector = YOLO(model_name) if YOLO is not None else None
-        self._last_ts = time.time() * 1000.0
+        self._clock = lambda: time.time() * 1000.0
 
     def process(self, frame: np.ndarray) -> np.ndarray:
         """Run detection and draw status on ``frame``."""
@@ -97,13 +97,9 @@ class FrameProcessor:
                         continue
                     x1, y1, x2, y2 = map(int, box.tolist())
                     detections.append((int(obj_id), (x1, y1, x2, y2)))
-        now = time.time() * 1000.0
-        elapsed_ms = now - self._last_ts
-        if elapsed_ms < 0:
-            elapsed_ms = 0.0
-        self._last_ts = now
+        now_ms = self._clock()
 
-        self.manager.update(detections, elapsed_ms)
+        self.manager.update(detections, now_ms)
         self.manager.draw(frame)
         return frame
 
@@ -114,6 +110,7 @@ class FrameProcessor:
         return {
             "active_ids": active_ids,
             "scene_active": self.manager.is_scene_active(),
+            "timestamp_ms": self._clock(),
         }
 
 
