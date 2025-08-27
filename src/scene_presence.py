@@ -126,6 +126,7 @@ class ScenePresenceManager:
         self.leave_ms = float(leave_ms if leave_ms is not None else 1000.0)
         self.finish_ms = float(finish_ms) if finish_ms is not None else None
         self.workers: Dict[int, WorkerState] = {}
+        self._last_ts_ms: float | None = None
 
     # ------------------------------------------------------------------
     def set_region(self, polygon: List[Tuple[int, int]]) -> None:
@@ -147,9 +148,25 @@ class ScenePresenceManager:
     def update(
         self,
         detections: Iterable[Tuple[int, Tuple[int, int, int, int]]],
-        elapsed_ms: float,
+        now_ms: float | None = None,
     ) -> None:
-        """Update state machine with current frame detections."""
+        """Update state machine with current frame detections.
+
+        ``now_ms`` is the current clock time in milliseconds. When omitted the
+        system clock is used. The manager keeps track of the last update time
+        and derives the elapsed duration internally, removing the dependency on
+        RTSP-provided timestamps.
+        """
+
+        if now_ms is None:
+            now_ms = time.time() * 1000.0
+        if self._last_ts_ms is None:
+            elapsed_ms = 0.0
+        else:
+            elapsed_ms = now_ms - self._last_ts_ms
+            if elapsed_ms < 0:
+                elapsed_ms = 0.0
+        self._last_ts_ms = now_ms
 
         seen: set[int] = set()
         for oid, bbox in detections:
@@ -332,22 +349,12 @@ def run_demo(
     if not is_rtsp:
         cap.set(cv2.CAP_PROP_POS_FRAMES, 0)
 
-    last_ts = cap.get(cv2.CAP_PROP_POS_MSEC)
-    if last_ts <= 0:
-        last_ts = time.time() * 1000.0
-
     while True:
         ret, frame = cap.read()
         if not ret:
             break
 
-        timestamp = cap.get(cv2.CAP_PROP_POS_MSEC)
-        if timestamp <= 0:
-            timestamp = time.time() * 1000.0
-        elapsed_ms = timestamp - last_ts
-        if elapsed_ms < 0:
-            elapsed_ms = 0.0
-        last_ts = timestamp
+        now_ms = time.time() * 1000.0
 
         results = detector.track(frame, conf=conf, persist=True)
         boxes = results[0].boxes
@@ -369,7 +376,7 @@ def run_demo(
                     continue
                 detections.append((int(obj_id), (x1, y1, x2, y2)))
 
-        manager.update(detections, elapsed_ms)
+        manager.update(detections, now_ms)
 
 
         if visualize:
