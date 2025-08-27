@@ -62,6 +62,12 @@
     <pre id="reportInfo"></pre>
   </section>
 
+  <section id="dwellSection">
+    <h2>Dwell Events</h2>
+    <button id="dwellBtn">Fetch Dwell Events</button>
+    <pre id="dwellInfo"></pre>
+  </section>
+
   <section id="configSection">
     <h2>Update Config</h2>
     <input type="text" id="sourceInput" placeholder="Video source">
@@ -80,6 +86,8 @@
     const snapshotInfo = document.getElementById("snapshotInfo");
     const reportBtn = document.getElementById("reportBtn");
     const reportInfo = document.getElementById("reportInfo");
+    const dwellBtn = document.getElementById("dwellBtn");
+    const dwellInfo = document.getElementById("dwellInfo");
     const sourceInput = document.getElementById("sourceInput");
     const regionInput = document.getElementById("regionInput");
     const saveConfig = document.getElementById("saveConfig");
@@ -129,6 +137,12 @@
       const resp = await fetch("/inference/report");
       const data = await resp.json();
       reportInfo.textContent = JSON.stringify(data, null, 2);
+    };
+
+    dwellBtn.onclick = async () => {
+      const resp = await fetch("/dwell_events");
+      const data = await resp.json();
+      dwellInfo.textContent = JSON.stringify(data, null, 2);
     };
 
     configBtn.onclick = async () => {

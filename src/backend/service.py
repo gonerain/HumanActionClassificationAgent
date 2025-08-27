@@ -18,6 +18,7 @@ import time
 from scene_presence import ScenePresenceManager
 
 from .config import CONFIG_FILE, load_config, save_config
+from .database import DwellEvent, get_session, init_db
 
 try:  # pragma: no cover - optional runtime dependency
     from ultralytics import YOLO
@@ -79,6 +80,9 @@ class FrameProcessor:
         self.conf = conf
         self.detector = YOLO(model_name) if YOLO is not None else None
         self._last_ts = time.time() * 1000.0
+        self.video_dir = Path("recordings")
+        self.video_dir.mkdir(exist_ok=True)
+        self._recorders: Dict[int, Tuple[cv2.VideoWriter, float, Path]] = {}
 
     def process(self, frame: np.ndarray) -> np.ndarray:
         """Run detection and draw status on ``frame``."""
@@ -104,6 +108,34 @@ class FrameProcessor:
         self._last_ts = now
 
         self.manager.update(detections, elapsed_ms)
+
+        # record videos for active workers
+        active_ids = [oid for oid, st in self.manager.workers.items() if st.status == "active"]
+        now_s = time.time()
+        for oid in active_ids:
+            writer = self._recorders.get(oid)
+            if writer is None:
+                path = self.video_dir / f"{int(now_s*1000)}_{oid}.avi"
+                fourcc = cv2.VideoWriter_fourcc(*"XVID")
+                vw = cv2.VideoWriter(str(path), fourcc, 20.0, (frame.shape[1], frame.shape[0]))
+                self._recorders[oid] = (vw, now_s, path)
+            self._recorders[oid][0].write(frame)
+
+        for oid in list(self._recorders.keys()):
+            if oid not in active_ids:
+                vw, start_ts, path = self._recorders.pop(oid)
+                vw.release()
+                with get_session() as sess:
+                    sess.add(
+                        DwellEvent(
+                            object_id=str(oid),
+                            start_ts=start_ts,
+                            end_ts=now_s,
+                            video_path=str(path),
+                        )
+                    )
+                    sess.commit()
+
         self.manager.draw(frame)
         return frame
 
@@ -122,6 +154,7 @@ class FrameProcessor:
 
 
 config = load_config(CONFIG_FILE)
+init_db()
 
 capture_worker: VideoCaptureWorker | None = None
 
@@ -191,6 +224,24 @@ def snapshot() -> Dict[str, object]:
     payload["roll_status"] = get_current_roll_status()
     payload["frame"] = b64
     return payload
+
+
+@app.get("/dwell_events")
+def dwell_events() -> List[Dict[str, object]]:
+    """Return all recorded dwell events."""
+
+    with get_session() as sess:
+        events = sess.query(DwellEvent).order_by(DwellEvent.start_ts).all()
+        return [
+            {
+                "id": e.id,
+                "object_id": e.object_id,
+                "start_ts": e.start_ts,
+                "end_ts": e.end_ts,
+                "video_path": e.video_path,
+            }
+            for e in events
+        ]
 
 
 @app.post("/config")
