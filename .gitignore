@@ -7,3 +7,4 @@ weights/
 *.json
 !scene_presence_config.schema.json
 recordings/
+*.db
