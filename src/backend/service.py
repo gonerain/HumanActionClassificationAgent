@@ -1,4 +1,9 @@
-"""Minimal backend service for scene presence monitoring."""
+"""Multi-camera backend service for scene presence monitoring.
+
+This service manages multiple camera streams whose configuration (source, ROI)
+is stored in the database. It exposes per-camera REST and WebSocket endpoints
+for snapshots and status streaming.
+"""
 
 from __future__ import annotations
 
@@ -6,19 +11,18 @@ import asyncio
 import base64
 import threading
 from pathlib import Path
-from typing import Any, Dict, List, Tuple
+from typing import Any, Dict, List, Tuple, Optional
 
 import cv2
 import numpy as np
-from fastapi import FastAPI, WebSocket, WebSocketDisconnect
+from fastapi import FastAPI, WebSocket, WebSocketDisconnect, HTTPException, Path as ApiPath
 from fastapi.responses import HTMLResponse
 
 import time
 
 from scene_presence import ScenePresenceManager
 
-from .config import CONFIG_FILE, load_config, save_config
-from .database import DwellEvent, get_session, init_db
+from .database import DwellEvent, get_session, init_db, Camera
 
 try:  # pragma: no cover - optional runtime dependency
     from ultralytics import YOLO
@@ -80,9 +84,10 @@ class FrameProcessor:
         self.conf = conf
         self.detector = YOLO(model_name) if YOLO is not None else None
         self._last_ts = time.time() * 1000.0
-        self.video_dir = Path("recordings")
+        self.video_dir = Path("../recordings")
         self.video_dir.mkdir(exist_ok=True)
         self._recorders: Dict[int, Tuple[cv2.VideoWriter, float, Path]] = {}
+        self.camera_label: Optional[str] = None
 
     def process(self, frame: np.ndarray) -> np.ndarray:
         """Run detection and draw status on ``frame``."""
@@ -103,7 +108,8 @@ class FrameProcessor:
                     detections.append((int(obj_id), (x1, y1, x2, y2)))
         now_ms = self._clock()
 
-        self.manager.update(detections, elapsed_ms)
+        # ScenePresenceManager expects current clock in ms; it keeps elapsed internally
+        self.manager.update(detections, now_ms)
 
         # record videos for active workers
         active_ids = [oid for oid, st in self.manager.workers.items() if st.status == "active"]
@@ -111,7 +117,8 @@ class FrameProcessor:
         for oid in active_ids:
             writer = self._recorders.get(oid)
             if writer is None:
-                path = self.video_dir / f"{int(now_s*1000)}_{oid}.avi"
+                prefix = f"{self.camera_label}_" if self.camera_label else ""
+                path = self.video_dir / f"{prefix}{int(now_s*1000)}_{oid}.avi"
                 fourcc = cv2.VideoWriter_fourcc(*"XVID")
                 vw = cv2.VideoWriter(str(path), fourcc, 20.0, (frame.shape[1], frame.shape[0]))
                 self._recorders[oid] = (vw, now_s, path)
@@ -145,53 +152,108 @@ class FrameProcessor:
             "timestamp_ms": self._clock(),
         }
 
+    # ------------------------------------------------------------------
+    def _clock(self) -> float:
+        return time.time() * 1000.0
+
 
 # ---------------------------------------------------------------------------
 # FastAPI application
 
 
-config = load_config(CONFIG_FILE)
 init_db()
 
-capture_worker: VideoCaptureWorker | None = None
+
+class CameraRuntime:
+    """Holds runtime objects for a camera stream."""
+
+    def __init__(self, cam_id: int, source: str | int, region: Optional[List[Tuple[int, int]]], label: str):
+        self.worker = VideoCaptureWorker(source)
+        self.processor = FrameProcessor(region=region)
+        self.processor.camera_label = label
+        self.worker.start()
+
+    def stop(self) -> None:
+        self.worker.stop()
 
 
-def set_source(source: int | str | None) -> None:
-    """(Re)start the video capture worker with ``source``.
+class CameraManager:
+    """Manage multiple camera runtimes based on DB records."""
 
-    When ``source`` is ``None`` or the stream fails to open, ``capture_worker``
-    becomes ``None`` and the backend continues running without frames.
-    """
+    def __init__(self) -> None:
+        self.cameras: Dict[int, CameraRuntime] = {}
 
-    global capture_worker
-    if capture_worker is not None:
-        capture_worker.stop()
-        capture_worker = None
-    if source is not None:
+    def _parse_region(self, region_json: str) -> Optional[List[Tuple[int, int]]]:
         try:
-            worker = VideoCaptureWorker(source)
+            import json
+
+            pts = json.loads(region_json or "[]")
+            if not pts:
+                return None
+            return [tuple(map(int, p)) for p in pts]
         except Exception:
-            capture_worker = None
-        else:
-            worker.start()
-            capture_worker = worker
-    config["source"] = source
+            return None
+
+    @staticmethod
+    def _source_to_vc_arg(source: str) -> str | int:
+        # allow integer camera index or url/path
+        try:
+            return int(source)
+        except ValueError:
+            return source
+
+    def ensure_running(self, cam: Camera) -> None:
+        """Start or restart runtime for camera ``cam``."""
+        region = self._parse_region(cam.region_json)
+        vc_source = self._source_to_vc_arg(cam.source)
+
+        # stop existing
+        if cam.id in self.cameras:
+            self.cameras[cam.id].stop()
+            self.cameras.pop(cam.id, None)
+        # start new
+        try:
+            runtime = CameraRuntime(cam.id, vc_source, region, label=f"cam{cam.id}")
+        except Exception as e:
+            # Failed to open; keep it absent but don't crash the app
+            return
+        self.cameras[cam.id] = runtime
+
+    def stop(self, cam_id: int) -> None:
+        rt = self.cameras.pop(cam_id, None)
+        if rt is not None:
+            rt.stop()
+
+    def get_runtime(self, cam_id: int) -> Optional[CameraRuntime]:
+        return self.cameras.get(cam_id)
 
 
-set_source(config.get("source"))
-processor = FrameProcessor(region=config.get("region"))
+manager = CameraManager()
+
+
+def _load_all_cameras() -> None:
+    with get_session() as sess:
+        cams = sess.query(Camera).all()
+        for cam in cams:
+            manager.ensure_running(cam)
+
+
 app = FastAPI()
+_load_all_cameras()
 
 
-@app.get("/inference/report")
-def inference_report() -> Dict[str, object]:
-    """Return scene presence report."""
+@app.get("/cameras/{camera_id}/inference/report")
+def inference_report(camera_id: int = ApiPath(..., ge=1)) -> Dict[str, object]:
+    """Return scene presence report for a single camera."""
 
-    frame = capture_worker.latest_frame if capture_worker else None
+    rt = manager.get_runtime(camera_id)
+    if rt is None:
+        raise HTTPException(status_code=404, detail="camera not running or not found")
+    frame = rt.worker.latest_frame
     if frame is None:
         return {"detail": "no frame"}
-    processor.process(frame.copy())
-    data = processor.state()
+    rt.processor.process(frame.copy())
+    data = rt.processor.state()
     data["roll_status"] = get_current_roll_status()
     return data
 
@@ -205,19 +267,22 @@ def index() -> HTMLResponse:
     return HTMLResponse(html_path.read_text(encoding="utf-8"))
 
 
-@app.get("/snapshot")
-def snapshot() -> Dict[str, object]:
-    """Return one processed frame and its recognition results."""
+@app.get("/cameras/{camera_id}/snapshot")
+def snapshot(camera_id: int = ApiPath(..., ge=1)) -> Dict[str, object]:
+    """Return one processed frame and its recognition results for a camera."""
 
-    frame = capture_worker.latest_frame if capture_worker else None
+    rt = manager.get_runtime(camera_id)
+    if rt is None:
+        raise HTTPException(status_code=404, detail="camera not running or not found")
+    frame = rt.worker.latest_frame
     if frame is None:
         return {"detail": "no frame"}
-    processed = processor.process(frame.copy())
+    processed = rt.processor.process(frame.copy())
     ret, buf = cv2.imencode(".jpg", processed)
     if not ret:
         return {"detail": "encode_failed"}
     b64 = base64.b64encode(buf).decode("ascii")
-    payload = processor.state()
+    payload = rt.processor.state()
     payload["roll_status"] = get_current_roll_status()
     payload["frame"] = b64
     return payload
@@ -241,44 +306,102 @@ def dwell_events() -> List[Dict[str, object]]:
         ]
 
 
-@app.post("/config")
-def update_config(payload: Dict[str, Any], save: bool = False) -> Dict[str, str]:
-    """Update runtime configuration.
+@app.get("/cameras")
+def list_cameras() -> List[Dict[str, Any]]:
+    with get_session() as sess:
+        cams = sess.query(Camera).all()
+        out: List[Dict[str, Any]] = []
+        for cam in cams:
+            rt = manager.get_runtime(cam.id)
+            out.append(
+                {
+                    "id": cam.id,
+                    "name": cam.name,
+                    "source": cam.source,
+                    "region": cam.region_json,
+                    "running": rt is not None,
+                }
+            )
+        return out
 
-    ``payload`` may contain ``source`` and ``region``. When ``save`` is ``True``
-    the updated configuration is persisted to disk. By default, the config file
-    is untouched to avoid pollution.
-    """
 
-    if "region" in payload and payload["region"] is not None:
-        region = [tuple(map(int, pt)) for pt in payload["region"]]
-        processor.manager.set_region(region)
-        config["region"] = region
-    if "source" in payload:
-        set_source(payload["source"])
-    if save:
-        save_config(config, CONFIG_FILE)
-    return {"detail": "updated"}
+@app.post("/cameras")
+def create_camera(payload: Dict[str, Any]) -> Dict[str, Any]:
+    name = str(payload.get("name") or "camera")
+    source = str(payload.get("source") or "0")
+    region = payload.get("region")  # expected list of [x,y]
+    import json
+
+    region_json = json.dumps(region or [])
+    with get_session() as sess:
+        cam = Camera(name=name, source=source, region_json=region_json)
+        sess.add(cam)
+        sess.commit()
+        sess.refresh(cam)
+        manager.ensure_running(cam)
+        return {"detail": "created", "id": cam.id}
 
 
-@app.websocket("/status")
-async def websocket_endpoint(ws: WebSocket) -> None:
-    """Stream processed frames and status to clients."""
+@app.put("/cameras/{camera_id}")
+def update_camera(camera_id: int, payload: Dict[str, Any]) -> Dict[str, Any]:
+    with get_session() as sess:
+        cam = sess.query(Camera).get(camera_id)
+        if cam is None:
+            raise HTTPException(status_code=404, detail="camera not found")
+        updated = False
+        if "name" in payload and payload["name"] is not None:
+            cam.name = str(payload["name"])
+            updated = True
+        if "source" in payload and payload["source"] is not None:
+            cam.source = str(payload["source"])
+            updated = True
+        if "region" in payload:
+            import json
+
+            cam.region_json = json.dumps(payload["region"] or [])
+            updated = True
+        if updated:
+            sess.add(cam)
+            sess.commit()
+            sess.refresh(cam)
+            manager.ensure_running(cam)
+        return {"detail": "updated"}
+
+
+@app.delete("/cameras/{camera_id}")
+def delete_camera(camera_id: int) -> Dict[str, Any]:
+    with get_session() as sess:
+        cam = sess.query(Camera).get(camera_id)
+        if cam is None:
+            return {"detail": "ok"}
+        manager.stop(camera_id)
+        sess.delete(cam)
+        sess.commit()
+        return {"detail": "deleted"}
+
+
+@app.websocket("/cameras/{camera_id}/status")
+async def websocket_endpoint(ws: WebSocket, camera_id: int) -> None:
+    """Stream processed frames and status to clients for a camera."""
 
     await ws.accept()
     try:
         while True:
-            frame = capture_worker.latest_frame if capture_worker else None
+            rt = manager.get_runtime(camera_id)
+            if rt is None:
+                await asyncio.sleep(0.2)
+                continue
+            frame = rt.worker.latest_frame
             if frame is None:
                 await asyncio.sleep(0.1)
                 continue
-            processed = processor.process(frame.copy())
+            processed = rt.processor.process(frame.copy())
             ret, buf = cv2.imencode(".jpg", processed)
             if not ret:
                 await asyncio.sleep(0.1)
                 continue
             b64 = base64.b64encode(buf).decode("ascii")
-            payload = processor.state()
+            payload = rt.processor.state()
             payload["roll_status"] = get_current_roll_status()
             payload["frame"] = b64
             await ws.send_json(payload)

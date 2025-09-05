@@ -44,10 +44,27 @@
   </style>
 </head>
 <body>
-  <h1>Scene Presence Monitor</h1>
-  <div id="status">Connecting...</div>
-  <img id="frame" src="" alt="Live Feed">
-  <div id="info"></div>
+  <h1>Scene Presence Monitor (Multi-Camera)</h1>
+
+  <section id="cameraSection">
+    <h2>Cameras</h2>
+    <div>
+      <button id="refreshCamerasBtn">Refresh</button>
+      <label>
+        Select:
+        <select id="cameraSelect"></select>
+      </label>
+      <button id="deleteCameraBtn">Delete</button>
+    </div>
+    <pre id="camerasList"></pre>
+  </section>
+
+  <section id="liveSection">
+    <h2>Live</h2>
+    <div id="status">No camera selected</div>
+    <img id="frame" src="" alt="Live Feed">
+    <div id="info"></div>
+  </section>
 
   <section id="snapshotSection">
     <h2>Snapshot</h2>
@@ -68,19 +85,28 @@
     <pre id="dwellInfo"></pre>
   </section>
 
-  <section id="configSection">
-    <h2>Update Config</h2>
-    <input type="text" id="sourceInput" placeholder="Video source">
-    <input type="text" id="regionInput" placeholder='Region JSON e.g. [[0,0],[100,0]]'>
-    <label><input type="checkbox" id="saveConfig"> Save to disk</label>
-    <button id="configBtn">Apply</button>
-    <pre id="configStatus"></pre>
+  <section id="manageSection">
+    <h2>Create / Update Camera</h2>
+    <div>
+      <input type="text" id="camNameInput" placeholder="Name (e.g. camA)">
+      <input type="text" id="sourceInput" placeholder="Source (e.g. 0 or rtsp://..)">
+      <input type="text" id="regionInput" placeholder='Region JSON e.g. [[0,0],[100,0]]'>
+    </div>
+    <div style="margin-top:8px;">
+      <button id="createCameraBtn">Create</button>
+      <button id="updateCameraBtn">Update Selected</button>
+    </div>
+    <pre id="manageStatus"></pre>
   </section>
 
   <script>
     const statusDiv = document.getElementById("status");
     const frameImg = document.getElementById("frame");
     const infoDiv = document.getElementById("info");
+    const cameraSelect = document.getElementById("cameraSelect");
+    const camerasList = document.getElementById("camerasList");
+    const refreshCamerasBtn = document.getElementById("refreshCamerasBtn");
+    const deleteCameraBtn = document.getElementById("deleteCameraBtn");
     const snapshotBtn = document.getElementById("snapshotBtn");
     const snapshotImg = document.getElementById("snapshot");
     const snapshotInfo = document.getElementById("snapshotInfo");
@@ -88,43 +114,86 @@
     const reportInfo = document.getElementById("reportInfo");
     const dwellBtn = document.getElementById("dwellBtn");
     const dwellInfo = document.getElementById("dwellInfo");
+    const camNameInput = document.getElementById("camNameInput");
     const sourceInput = document.getElementById("sourceInput");
     const regionInput = document.getElementById("regionInput");
-    const saveConfig = document.getElementById("saveConfig");
-    const configBtn = document.getElementById("configBtn");
-    const configStatus = document.getElementById("configStatus");
+    const createCameraBtn = document.getElementById("createCameraBtn");
+    const updateCameraBtn = document.getElementById("updateCameraBtn");
+    const manageStatus = document.getElementById("manageStatus");
 
+    let socket = null;
     const wsProto = location.protocol === "https:" ? "wss" : "ws";
-    const socket = new WebSocket(`${wsProto}://${location.host}/status`);
 
-    socket.onopen = () => {
-      statusDiv.textContent = "✅ Connected to backend";
+    function closeSocket() {
+      if (socket) {
+        try { socket.close(); } catch(e) {}
+      }
+      socket = null;
+    }
+
+    function connectWS(cameraId) {
+      closeSocket();
+      statusDiv.textContent = "Connecting...";
+      socket = new WebSocket(`${wsProto}://${location.host}/cameras/${cameraId}/status`);
+      socket.onopen = () => {
+        statusDiv.textContent = `✅ Connected to camera ${cameraId}`;
+      };
+      socket.onmessage = (event) => {
+        const data = JSON.parse(event.data);
+        if (data.frame) {
+          frameImg.src = "data:image/jpeg;base64," + data.frame;
+        }
+        statusDiv.textContent = data.scene_active
+          ? `🟢 Camera ${cameraId}: 有人在岗`
+          : `🔴 Camera ${cameraId}: 无人在岗`;
+        infoDiv.innerHTML = `
+          <strong>Active IDs:</strong> ${data.active_ids.join(", ")}<br>
+          <strong>Roll Status:</strong> ${data.roll_status}
+        `;
+      };
+      socket.onerror = () => { statusDiv.textContent = `❌ Camera ${cameraId} WebSocket error`; };
+      socket.onclose = () => { statusDiv.textContent = `🔌 Camera ${cameraId} WebSocket closed`; };
+    }
+
+    async function loadCameras() {
+      const resp = await fetch('/cameras');
+      const cams = await resp.json();
+      camerasList.textContent = JSON.stringify(cams, null, 2);
+      cameraSelect.innerHTML = '';
+      for (const cam of cams) {
+        const opt = document.createElement('option');
+        opt.value = cam.id;
+        opt.textContent = `#${cam.id} ${cam.name} (${cam.running ? 'running' : 'stopped'})`;
+        cameraSelect.appendChild(opt);
+      }
+      if (cams.length > 0) {
+        cameraSelect.value = cams[0].id;
+        connectWS(cams[0].id);
+      } else {
+        statusDiv.textContent = 'No camera selected';
+        closeSocket();
+        frameImg.src = '';
+        infoDiv.textContent = '';
+      }
+    }
+
+    refreshCamerasBtn.onclick = loadCameras;
+    cameraSelect.onchange = () => {
+      const id = cameraSelect.value;
+      if (id) connectWS(id);
     };
 
-    socket.onmessage = (event) => {
-      const data = JSON.parse(event.data);
-      frameImg.src = "data:image/jpeg;base64," + data.frame;
-
-      statusDiv.textContent = data.scene_active
-        ? "🟢 有人在岗"
-        : "🔴 无人在岗";
-
-      infoDiv.innerHTML = `
-        <strong>Active IDs:</strong> ${data.active_ids.join(", ")}<br>
-        <strong>Roll Status:</strong> ${data.roll_status}
-      `;
-    };
-
-    socket.onerror = () => {
-      statusDiv.textContent = "❌ WebSocket error";
-    };
-
-    socket.onclose = () => {
-      statusDiv.textContent = "🔌 WebSocket closed";
+    deleteCameraBtn.onclick = async () => {
+      const id = cameraSelect.value;
+      if (!id) return;
+      await fetch(`/cameras/${id}`, { method: 'DELETE' });
+      await loadCameras();
     };
 
     snapshotBtn.onclick = async () => {
-      const resp = await fetch("/snapshot");
+      const id = cameraSelect.value;
+      if (!id) return;
+      const resp = await fetch(`/cameras/${id}/snapshot`);
       const data = await resp.json();
       if (data.frame) {
         snapshotImg.src = "data:image/jpeg;base64," + data.frame;
@@ -134,7 +203,9 @@
     };
 
     reportBtn.onclick = async () => {
-      const resp = await fetch("/inference/report");
+      const id = cameraSelect.value;
+      if (!id) return;
+      const resp = await fetch(`/cameras/${id}/inference/report`);
       const data = await resp.json();
       reportInfo.textContent = JSON.stringify(data, null, 2);
     };
@@ -145,31 +216,43 @@
       dwellInfo.textContent = JSON.stringify(data, null, 2);
     };
 
-    configBtn.onclick = async () => {
-      const payload = {};
-      const srcVal = sourceInput.value.trim();
-      if (srcVal) {
-        payload.source = isNaN(Number(srcVal)) ? srcVal : Number(srcVal);
-      }
+    createCameraBtn.onclick = async () => {
+      const name = camNameInput.value.trim() || undefined;
+      const source = sourceInput.value.trim() || undefined;
+      let region = undefined;
       const regionVal = regionInput.value.trim();
       if (regionVal) {
-        try {
-          payload.region = JSON.parse(regionVal);
-        } catch (e) {
-          configStatus.textContent = "Invalid region JSON";
-          return;
-        }
+        try { region = JSON.parse(regionVal); } catch (e) { manageStatus.textContent = 'Invalid region JSON'; return; }
       }
-      const params = new URLSearchParams();
-      if (saveConfig.checked) params.set("save", "true");
-      const resp = await fetch(`/config?${params.toString()}`, {
-        method: "POST",
-        headers: {"Content-Type": "application/json"},
+      const resp = await fetch('/cameras', {
+        method: 'POST', headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ name, source, region })
+      });
+      const data = await resp.json();
+      manageStatus.textContent = JSON.stringify(data, null, 2);
+      await loadCameras();
+    };
+
+    updateCameraBtn.onclick = async () => {
+      const id = cameraSelect.value;
+      if (!id) return;
+      const payload = {};
+      if (camNameInput.value.trim()) payload.name = camNameInput.value.trim();
+      if (sourceInput.value.trim()) payload.source = sourceInput.value.trim();
+      if (regionInput.value.trim()) {
+        try { payload.region = JSON.parse(regionInput.value.trim()); } catch (e) { manageStatus.textContent = 'Invalid region JSON'; return; }
+      }
+      const resp = await fetch(`/cameras/${id}`, {
+        method: 'PUT', headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify(payload)
       });
       const data = await resp.json();
-      configStatus.textContent = JSON.stringify(data, null, 2);
+      manageStatus.textContent = JSON.stringify(data, null, 2);
+      await loadCameras();
     };
+
+    // initial load
+    loadCameras();
   </script>
 </body>
 </html>

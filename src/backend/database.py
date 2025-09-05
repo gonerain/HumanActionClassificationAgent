@@ -1,9 +1,11 @@
 from __future__ import annotations
 
-"""Lightweight SQLite storage for dwell events."""
+"""SQLite storage for cameras and dwell events."""
 
 import os
 from typing import Iterator
+
+from contextlib import contextmanager
 
 from sqlalchemy import Float, Integer, String, create_engine
 from sqlalchemy.orm import DeclarativeBase, Mapped, mapped_column, sessionmaker
@@ -31,6 +33,20 @@ class DwellEvent(Base):
     video_path: Mapped[str] = mapped_column(String)
 
 
+class Camera(Base):
+    """Camera configuration with source and ROI polygon.
+
+    ``region_json`` stores a JSON-serialized list of points [[x,y], ...].
+    """
+
+    __tablename__ = "cameras"
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
+    name: Mapped[str] = mapped_column(String)
+    source: Mapped[str] = mapped_column(String)
+    region_json: Mapped[str] = mapped_column(String, default="[]")
+
+
 def init_db(url: str | None = None) -> None:
     """Initialize database and create tables.
 
@@ -44,13 +60,15 @@ def init_db(url: str | None = None) -> None:
         SessionLocal = sessionmaker(bind=engine, autoflush=False, expire_on_commit=False)
     Base.metadata.create_all(engine)
 
-
-def get_session() -> Iterator:
-    """Yield a SQLAlchemy session (context manager)."""
-
+@contextmanager
+def get_session():
+    """Provide a transactional scope around a series of operations."""
     session = SessionLocal()
     try:
         yield session
+        session.commit()
+    except:
+        session.rollback()
+        raise
     finally:
         session.close()
-
