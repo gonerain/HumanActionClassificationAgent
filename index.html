@@ -41,6 +41,13 @@
       border: 1px solid #ccc;
       overflow-x: auto;
     }
+    #alarm {
+      margin: 8px 0;
+      padding: 8px;
+      color: #fff;
+      background: #d32f2f;
+      display: none;
+    }
   </style>
 </head>
 <body>
@@ -62,6 +69,7 @@
   <section id="liveSection">
     <h2>Live</h2>
     <div id="status">No camera selected</div>
+    <div id="alarm"></div>
     <img id="frame" src="" alt="Live Feed">
     <div id="info"></div>
   </section>
@@ -103,6 +111,7 @@
     const statusDiv = document.getElementById("status");
     const frameImg = document.getElementById("frame");
     const infoDiv = document.getElementById("info");
+    const alarmDiv = document.getElementById("alarm");
     const cameraSelect = document.getElementById("cameraSelect");
     const camerasList = document.getElementById("camerasList");
     const refreshCamerasBtn = document.getElementById("refreshCamerasBtn");
@@ -148,8 +157,16 @@
           : `🔴 Camera ${cameraId}: 无人在岗`;
         infoDiv.innerHTML = `
           <strong>Active IDs:</strong> ${data.active_ids.join(", ")}<br>
-          <strong>Roll Status:</strong> ${data.roll_status}
+          <strong>Roll Status:</strong> ${data.roll_status}<br>
+          <strong>Health:</strong> ${data.health ? data.health.status : 'n/a'}
         `;
+        if (data.alarm) {
+          alarmDiv.style.display = 'block';
+          alarmDiv.textContent = `⚠️ 异常：${data.alarm_message || 'unknown'}`;
+        } else {
+          alarmDiv.style.display = 'none';
+          alarmDiv.textContent = '';
+        }
       };
       socket.onerror = () => { statusDiv.textContent = `❌ Camera ${cameraId} WebSocket error`; };
       socket.onclose = () => { statusDiv.textContent = `🔌 Camera ${cameraId} WebSocket closed`; };
@@ -211,7 +228,9 @@
     };
 
     dwellBtn.onclick = async () => {
-      const resp = await fetch("/dwell_events");
+      const id = cameraSelect.value;
+      if (!id) return;
+      const resp = await fetch(`/cameras/${id}/dwell_events`);
       const data = await resp.json();
       dwellInfo.textContent = JSON.stringify(data, null, 2);
     };

@@ -10,19 +10,21 @@ from __future__ import annotations
 import asyncio
 import base64
 import threading
+from dataclasses import dataclass, asdict
 from pathlib import Path
 from typing import Any, Dict, List, Tuple, Optional
 
 import cv2
 import numpy as np
 from fastapi import FastAPI, WebSocket, WebSocketDisconnect, HTTPException, Path as ApiPath
+from starlette.websockets import WebSocketState  # type: ignore
 from fastapi.responses import HTMLResponse
 
 import time
 
 from scene_presence import ScenePresenceManager
 
-from .database import DwellEvent, get_session, init_db, Camera
+from .database import DwellEvent, get_session, init_db, Camera, stop_db_worker
 from .workflows import Workflow, ROIWorkflow
 
 try:  # pragma: no cover - optional runtime dependency
@@ -47,28 +49,141 @@ def get_current_roll_status() -> str:
 # Video capture worker (frame drop strategy)
 
 
+@dataclass
+class HealthStatus:
+    status: str = "init"  # init, ok, degraded, error
+    last_open_ts: float = 0.0
+    last_read_ts: float = 0.0
+    last_frame_ts: float = 0.0
+    reconnect_attempts: int = 0
+    last_error: str | None = None
+    stuck_seconds: float = 0.0
+    alarm: bool = False
+    alarm_message: str | None = None
+
+
 class VideoCaptureWorker(threading.Thread):
-    """Continuously grab frames from a video source."""
+    """Continuously grab frames with reconnection and health checks."""
 
     def __init__(self, source: int | str = 0) -> None:
         super().__init__(daemon=True)
-        self.cap = cv2.VideoCapture(source)
-        if not self.cap.isOpened():
-            raise IOError(f"Cannot open {source}")
+        self._source_arg = source
+        self.cap: Optional[cv2.VideoCapture] = None
         self.latest_frame: np.ndarray | None = None
         self._running = True
+        self._prev_small: Optional[np.ndarray] = None
+        self.health = HealthStatus()
+        self._lock = threading.Lock()
+
+    def _open(self) -> bool:
+        # Release any existing cap first
+        try:
+            if self.cap is not None:
+                self.cap.release()
+        except Exception:
+            pass
+        self.cap = cv2.VideoCapture(self._source_arg)
+        ok = self.cap.isOpened()
+        now = time.time()
+        self.health.last_open_ts = now
+        if not ok:
+            self.health.status = "error"
+            self.health.last_error = f"Cannot open {self._source_arg}"
+        return ok
+
+    def _small_gray(self, frame: np.ndarray) -> np.ndarray:
+        g = cv2.cvtColor(frame, cv2.COLOR_BGR2GRAY)
+        sm = cv2.resize(g, (32, 18), interpolation=cv2.INTER_AREA)
+        return sm
 
     def run(self) -> None:  # pragma: no cover - background loop
+        backoff = [1, 2, 5, 10, 30]
+        bo_idx = 0
+        STUCK_SEC = 5.0
+        NOFRAME_SEC = 5.0
         while self._running:
+            if self.cap is None or not self.cap.isOpened():
+                if not self._open():
+                    self.health.reconnect_attempts += 1
+                    wait = backoff[min(bo_idx, len(backoff) - 1)]
+                    bo_idx = min(bo_idx + 1, len(backoff) - 1)
+                    self.health.alarm = True
+                    self.health.alarm_message = self.health.last_error or "unknown open error"
+                    time.sleep(wait)
+                    continue
+                # opened successfully
+                bo_idx = 0
+                self.health.status = "degraded"  # until first frame
+                self.health.last_error = None
+                self.health.alarm = False
+                self.health.alarm_message = None
+
             ret, frame = self.cap.read()
-            if ret:
+            now = time.time()
+            self.health.last_read_ts = now
+            if not ret or frame is None:
+                # treat as error -> force reopen
+                try:
+                    self.cap.release()
+                except Exception:
+                    pass
+                self.cap = None
+                self.health.status = "error"
+                self.health.last_error = "read_failed"
+                continue
+
+            small = self._small_gray(frame)
+            stuck = False
+            if self._prev_small is not None:
+                diff = cv2.absdiff(small, self._prev_small)
+                mean_diff = float(np.mean(diff))
+                if mean_diff < 0.5:  # almost identical
+                    self.health.stuck_seconds += (now - (self.health.last_frame_ts or now))
+                else:
+                    self.health.stuck_seconds = 0.0
+            self._prev_small = small
+
+            with self._lock:
                 self.latest_frame = frame
+                self.health.last_frame_ts = now
+
+            # update status
+            if self.health.stuck_seconds >= STUCK_SEC:
+                self.health.status = "degraded"
+                self.health.alarm = True
+                self.health.alarm_message = f"stream_stuck_{self.health.stuck_seconds:.1f}s"
             else:
-                break
-        self.cap.release()
+                self.health.status = "ok"
+                # clear alarm if good frames continue
+                if now - self.health.last_frame_ts < 1.0:
+                    self.health.alarm = False
+                    self.health.alarm_message = None
+
+            # no frame for too long
+            if now - self.health.last_frame_ts > NOFRAME_SEC:
+                self.health.status = "error"
+                self.health.alarm = True
+                self.health.alarm_message = "no_frame_timeout"
+
+        # on exit, release
+        try:
+            if self.cap is not None:
+                self.cap.release()
+        except Exception:
+            pass
 
     def stop(self) -> None:
         self._running = False
+        # Attempt to break any blocking read by releasing the capture
+        try:
+            if self.cap is not None:
+                self.cap.release()
+                self.cap = None
+        except Exception:
+            pass
+
+    def get_health(self) -> Dict[str, Any]:
+        return asdict(self.health)
 
 
 # ---------------------------------------------------------------------------
@@ -100,6 +215,15 @@ class FrameProcessor:  # Backward-compatible alias over default workflow
         if hasattr(self._wf, "set_camera_label"):
             self._wf.set_camera_label(value)
 
+    @property
+    def camera_id(self) -> Optional[int]:
+        return getattr(self._wf, "camera_id", None)
+
+    @camera_id.setter
+    def camera_id(self, value: Optional[int]) -> None:
+        if hasattr(self._wf, "set_camera_id"):
+            self._wf.set_camera_id(value)
+
 
 # ---------------------------------------------------------------------------
 # FastAPI application
@@ -115,10 +239,15 @@ class CameraRuntime:
         self.worker = VideoCaptureWorker(source)
         self.processor = FrameProcessor(region=region)
         self.processor.camera_label = label
+        self.processor.camera_id = cam_id
         self.worker.start()
 
     def stop(self) -> None:
         self.worker.stop()
+        try:
+            self.worker.join(timeout=2.0)
+        except Exception:
+            pass
         try:
             self.processor.stop()
         except Exception:
@@ -175,6 +304,13 @@ class CameraManager:
     def get_runtime(self, cam_id: int) -> Optional[CameraRuntime]:
         return self.cameras.get(cam_id)
 
+    def stop_all(self) -> None:
+        for cam_id, rt in list(self.cameras.items()):
+            try:
+                rt.stop()
+            finally:
+                self.cameras.pop(cam_id, None)
+
 
 manager = CameraManager()
 
@@ -187,7 +323,25 @@ def _load_all_cameras() -> None:
 
 
 app = FastAPI()
+app.state.shutting_down = False
 _load_all_cameras()
+
+
+@app.on_event("shutdown")
+def _on_shutdown() -> None:
+    # Gracefully stop camera workers and DB background worker
+    try:
+        app.state.shutting_down = True
+    except Exception:
+        pass
+    try:
+        manager.stop_all()
+    except Exception:
+        pass
+    try:
+        stop_db_worker()
+    except Exception:
+        pass
 
 
 @app.get("/cameras/{camera_id}/inference/report")
@@ -246,6 +400,29 @@ def dwell_events() -> List[Dict[str, object]]:
             {
                 "id": e.id,
                 "object_id": e.object_id,
+                "camera_id": e.camera_id,
+                "start_ts": e.start_ts,
+                "end_ts": e.end_ts,
+                "video_path": e.video_path,
+            }
+            for e in events
+        ]
+
+
+@app.get("/cameras/{camera_id}/dwell_events")
+def dwell_events_by_camera(camera_id: int) -> List[Dict[str, object]]:
+    with get_session() as sess:
+        events = (
+            sess.query(DwellEvent)
+            .filter(DwellEvent.camera_id == camera_id)
+            .order_by(DwellEvent.start_ts)
+            .all()
+        )
+        return [
+            {
+                "id": e.id,
+                "object_id": e.object_id,
+                "camera_id": e.camera_id,
                 "start_ts": e.start_ts,
                 "end_ts": e.end_ts,
                 "video_path": e.video_path,
@@ -268,9 +445,18 @@ def list_cameras() -> List[Dict[str, Any]]:
                     "source": cam.source,
                     "region": cam.region_json,
                     "running": rt is not None,
+                    "health": rt.worker.get_health() if rt else None,
                 }
             )
         return out
+
+
+@app.get("/cameras/{camera_id}/health")
+def camera_health(camera_id: int) -> Dict[str, Any]:
+    rt = manager.get_runtime(camera_id)
+    if rt is None:
+        raise HTTPException(status_code=404, detail="camera not running or not found")
+    return rt.worker.get_health()
 
 
 @app.post("/cameras")
@@ -284,7 +470,7 @@ def create_camera(payload: Dict[str, Any]) -> Dict[str, Any]:
     with get_session() as sess:
         cam = Camera(name=name, source=source, region_json=region_json)
         sess.add(cam)
-        sess.commit()
+        # commit handled by get_session context
         sess.refresh(cam)
         manager.ensure_running(cam)
         return {"detail": "created", "id": cam.id}
@@ -310,7 +496,7 @@ def update_camera(camera_id: int, payload: Dict[str, Any]) -> Dict[str, Any]:
             updated = True
         if updated:
             sess.add(cam)
-            sess.commit()
+            # commit handled by get_session context
             sess.refresh(cam)
             manager.ensure_running(cam)
         return {"detail": "updated"}
@@ -324,7 +510,7 @@ def delete_camera(camera_id: int) -> Dict[str, Any]:
             return {"detail": "ok"}
         manager.stop(camera_id)
         sess.delete(cam)
-        sess.commit()
+        # commit handled by get_session context
         return {"detail": "deleted"}
 
 
@@ -335,27 +521,81 @@ async def websocket_endpoint(ws: WebSocket, camera_id: int) -> None:
     await ws.accept()
     try:
         while True:
-            rt = manager.get_runtime(camera_id)
-            if rt is None:
-                await asyncio.sleep(0.2)
-                continue
-            frame = rt.worker.latest_frame
-            if frame is None:
+            # Break fast on shutdown or client disconnect
+            if getattr(app.state, "shutting_down", False):
+                break
+            try:
+                if ws.client_state is not None and ws.client_state != WebSocketState.CONNECTED:
+                    break
+            except Exception:
+                # If we cannot query state, continue and rely on send exceptions
+                pass
+
+            try:
+                rt = manager.get_runtime(camera_id)
+                if rt is None:
+                    # only send when connected
+                    if ws.client_state == WebSocketState.CONNECTED:
+                        await ws.send_json({
+                            "alarm": True,
+                            "alarm_message": "camera_not_running",
+                            "health": None,
+                        })
+                    await asyncio.sleep(0.2)
+                    continue
+
+                frame = rt.worker.latest_frame
+                if frame is None:
+                    if ws.client_state == WebSocketState.CONNECTED:
+                        await ws.send_json({
+                            "health": rt.worker.get_health(),
+                            "alarm": True,
+                            "alarm_message": "no_frame",
+                        })
+                    await asyncio.sleep(0.2)
+                    continue
+
+                processed = rt.processor.process(frame.copy())
+                ret, buf = cv2.imencode(".jpg", processed)
+                if not ret:
+                    await asyncio.sleep(0.05)
+                    continue
+                b64 = base64.b64encode(buf).decode("ascii")
+                payload = rt.processor.state()
+                payload["roll_status"] = get_current_roll_status()
+                payload["frame"] = b64
+                health = rt.worker.get_health()
+                payload["health"] = health
+                payload["alarm"] = bool(health.get("alarm"))
+                payload["alarm_message"] = health.get("alarm_message")
+                if ws.client_state == WebSocketState.CONNECTED:
+                    await ws.send_json(payload)
+                await asyncio.sleep(0.1)
+            except asyncio.CancelledError:
+                # Propagate to allow server to exit
+                raise
+            except RuntimeError:
+                # Likely "Cannot call send once close sent" => exit loop
+                break
+            except Exception as e:
+                # Try to notify once if still connected; otherwise just back off
+                try:
+                    if ws.client_state == WebSocketState.CONNECTED:
+                        await ws.send_json({
+                            "alarm": True,
+                            "alarm_message": f"server_error:{type(e).__name__}",
+                        })
+                except Exception:
+                    pass
                 await asyncio.sleep(0.1)
                 continue
-            processed = rt.processor.process(frame.copy())
-            ret, buf = cv2.imencode(".jpg", processed)
-            if not ret:
-                await asyncio.sleep(0.1)
-                continue
-            b64 = base64.b64encode(buf).decode("ascii")
-            payload = rt.processor.state()
-            payload["roll_status"] = get_current_roll_status()
-            payload["frame"] = b64
-            await ws.send_json(payload)
-            await asyncio.sleep(0.1)
     except WebSocketDisconnect:
         pass
+    finally:
+        try:
+            await ws.close()
+        except Exception:
+            pass
 
 
 # ---------------------------------------------------------------------------

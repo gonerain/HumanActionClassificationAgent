@@ -13,9 +13,11 @@ import time
 
 import cv2
 import numpy as np
+from datetime import datetime, timezone
+import logging
 
 from scene_presence import ScenePresenceManager
-from .database import DwellEvent, get_session
+from .database import enqueue_dwell_event
 
 try:  # pragma: no cover - optional runtime dependency
     from ultralytics import YOLO
@@ -38,6 +40,9 @@ class Workflow:
     def stop(self) -> None:
         pass
 
+    def set_camera_id(self, camera_id: Optional[int]) -> None:
+        pass
+
 
 class ROIWorkflow(Workflow):
     """ROI-based presence tracking workflow using YOLO."""
@@ -56,6 +61,16 @@ class ROIWorkflow(Workflow):
         self.video_dir.mkdir(exist_ok=True)
         self._recorders: Dict[int, Tuple[cv2.VideoWriter, float, Path]] = {}
         self.camera_label: Optional[str] = None
+        self.camera_id: Optional[int] = None
+        self._stopped: bool = False
+
+        # reduce ultralytics verbosity if present
+        try:
+            from ultralytics.utils import LOGGER  # type: ignore
+
+            LOGGER.setLevel(logging.ERROR)
+        except Exception:
+            pass
 
     # ------------------------------------------------------------------
     def _clock(self) -> float:
@@ -63,6 +78,9 @@ class ROIWorkflow(Workflow):
 
     def set_camera_label(self, label: Optional[str]) -> None:
         self.camera_label = label
+
+    def set_camera_id(self, camera_id: Optional[int]) -> None:
+        self.camera_id = camera_id
 
     def stop(self) -> None:
         # release all writers
@@ -72,12 +90,23 @@ class ROIWorkflow(Workflow):
             except Exception:
                 pass
         self._recorders.clear()
+        self._stopped = True
+        # try to release detector resources
+        try:
+            import gc
+
+            self.detector = None
+            gc.collect()
+        except Exception:
+            pass
 
     # ------------------------------------------------------------------
     def process(self, frame: np.ndarray) -> np.ndarray:
+        if self._stopped:
+            return frame
         detections: List[Tuple[int, Tuple[int, int, int, int]]] = []
         if self.detector is not None:
-            results = self.detector.track(frame, conf=self.conf, persist=True)
+            results = self.detector.track(frame, conf=self.conf, persist=True, verbose=False)
             boxes = results[0].boxes
             ids = boxes.id if hasattr(boxes, "id") else None
             classes = boxes.cls if hasattr(boxes, "cls") else None
@@ -110,16 +139,13 @@ class ROIWorkflow(Workflow):
             if oid not in active_ids:
                 vw, start_ts, path = self._recorders.pop(oid)
                 vw.release()
-                with get_session() as sess:
-                    sess.add(
-                        DwellEvent(
-                            object_id=str(oid),
-                            start_ts=start_ts,
-                            end_ts=now_s,
-                            video_path=str(path),
-                        )
-                    )
-                    sess.commit()
+                enqueue_dwell_event(
+                    object_id=str(oid),
+                    camera_id=self.camera_id,
+                    start_ts=datetime.fromtimestamp(start_ts, tz=timezone.utc),
+                    end_ts=datetime.fromtimestamp(now_s, tz=timezone.utc),
+                    video_path=str(path),
+                )
 
         self.manager.draw(frame)
         return frame
