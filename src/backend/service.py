@@ -83,6 +83,10 @@ class VideoCaptureWorker(threading.Thread):
         except Exception:
             pass
         self.cap = cv2.VideoCapture(self._source_arg)
+        try:
+            self.cap.set(cv2.CAP_PROP_BUFFERSIZE, 1)
+        except Exception:
+            pass
         ok = self.cap.isOpened()
         now = time.time()
         self.health.last_open_ts = now
@@ -232,6 +236,52 @@ class FrameProcessor:  # Backward-compatible alias over default workflow
 init_db()
 
 
+# Reduce OpenCV CPU thread usage (helps stability on multi-cam)
+try:  # pragma: no cover
+    cv2.setNumThreads(1)
+except Exception:
+    pass
+
+
+class InferenceWorker(threading.Thread):
+    """Per-camera inference worker producing latest jpeg + state at target FPS."""
+
+    def __init__(self, cap_worker: VideoCaptureWorker, processor: FrameProcessor, target_fps: float = 8.0) -> None:
+        super().__init__(daemon=True)
+        self.cap_worker = cap_worker
+        self.processor = processor
+        self.target_fps = max(0.5, float(target_fps))
+        self.period = 1.0 / self.target_fps
+        self._running = True
+        self.latest_jpeg: Optional[bytes] = None
+        self.latest_payload: Dict[str, Any] = {}
+
+    def run(self) -> None:  # pragma: no cover - background loop
+        last = 0.0
+        while self._running:
+            now = time.time()
+            if now - last < self.period:
+                time.sleep(min(0.01, self.period))
+                continue
+            last = now
+            frame = self.cap_worker.latest_frame
+            if frame is None:
+                time.sleep(0.05)
+                continue
+            try:
+                processed = self.processor.process(frame.copy())
+                ok, buf = cv2.imencode(".jpg", processed, [int(cv2.IMWRITE_JPEG_QUALITY), 70])
+                if ok:
+                    self.latest_jpeg = buf.tobytes()
+                self.latest_payload = self.processor.state()
+            except Exception:
+                time.sleep(0.05)
+                continue
+
+    def stop(self) -> None:
+        self._running = False
+
+
 class CameraRuntime:
     """Holds runtime objects for a camera stream."""
 
@@ -241,6 +291,8 @@ class CameraRuntime:
         self.processor.camera_label = label
         self.processor.camera_id = cam_id
         self.worker.start()
+        self.infer = InferenceWorker(self.worker, self.processor, target_fps=8.0)
+        self.infer.start()
 
     def stop(self) -> None:
         self.worker.stop()
@@ -250,6 +302,11 @@ class CameraRuntime:
             pass
         try:
             self.processor.stop()
+        except Exception:
+            pass
+        try:
+            self.infer.stop()
+            self.infer.join(timeout=2.0)
         except Exception:
             pass
 
@@ -351,11 +408,14 @@ def inference_report(camera_id: int = ApiPath(..., ge=1)) -> Dict[str, object]:
     rt = manager.get_runtime(camera_id)
     if rt is None:
         raise HTTPException(status_code=404, detail="camera not running or not found")
-    frame = rt.worker.latest_frame
-    if frame is None:
-        return {"detail": "no frame"}
-    rt.processor.process(frame.copy())
-    data = rt.processor.state()
+    if hasattr(rt, "infer") and rt.infer.latest_payload:
+        data = dict(rt.infer.latest_payload)
+    else:
+        frame = rt.worker.latest_frame
+        if frame is None:
+            return {"detail": "no frame"}
+        rt.processor.process(frame.copy())
+        data = rt.processor.state()
     data["roll_status"] = get_current_roll_status()
     return data
 
@@ -376,15 +436,19 @@ def snapshot(camera_id: int = ApiPath(..., ge=1)) -> Dict[str, object]:
     rt = manager.get_runtime(camera_id)
     if rt is None:
         raise HTTPException(status_code=404, detail="camera not running or not found")
-    frame = rt.worker.latest_frame
-    if frame is None:
-        return {"detail": "no frame"}
-    processed = rt.processor.process(frame.copy())
-    ret, buf = cv2.imencode(".jpg", processed)
-    if not ret:
-        return {"detail": "encode_failed"}
-    b64 = base64.b64encode(buf).decode("ascii")
-    payload = rt.processor.state()
+    if hasattr(rt, "infer") and rt.infer.latest_jpeg is not None:
+        b64 = base64.b64encode(rt.infer.latest_jpeg).decode("ascii")
+        payload = dict(rt.infer.latest_payload)
+    else:
+        frame = rt.worker.latest_frame
+        if frame is None:
+            return {"detail": "no frame"}
+        processed = rt.processor.process(frame.copy())
+        ret, buf = cv2.imencode(".jpg", processed)
+        if not ret:
+            return {"detail": "encode_failed"}
+        b64 = base64.b64encode(buf).decode("ascii")
+        payload = rt.processor.state()
     payload["roll_status"] = get_current_roll_status()
     payload["frame"] = b64
     return payload
@@ -544,8 +608,8 @@ async def websocket_endpoint(ws: WebSocket, camera_id: int) -> None:
                     await asyncio.sleep(0.2)
                     continue
 
-                frame = rt.worker.latest_frame
-                if frame is None:
+                # Use precomputed inference; if missing send heartbeat
+                if not hasattr(rt, "infer") or rt.infer.latest_jpeg is None:
                     if ws.client_state == WebSocketState.CONNECTED:
                         await ws.send_json({
                             "health": rt.worker.get_health(),
@@ -555,13 +619,8 @@ async def websocket_endpoint(ws: WebSocket, camera_id: int) -> None:
                     await asyncio.sleep(0.2)
                     continue
 
-                processed = rt.processor.process(frame.copy())
-                ret, buf = cv2.imencode(".jpg", processed)
-                if not ret:
-                    await asyncio.sleep(0.05)
-                    continue
-                b64 = base64.b64encode(buf).decode("ascii")
-                payload = rt.processor.state()
+                b64 = base64.b64encode(rt.infer.latest_jpeg).decode("ascii")
+                payload = dict(rt.infer.latest_payload)
                 payload["roll_status"] = get_current_roll_status()
                 payload["frame"] = b64
                 health = rt.worker.get_health()
