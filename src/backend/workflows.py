@@ -123,7 +123,8 @@ class ROIWorkflow(Workflow):
         self.manager.update(detections, now_ms)
 
         # record videos for active workers
-        active_ids = [oid for oid, st in self.manager.workers.items() if st.status == "active"]
+        states = {oid: st.status for oid, st in self.manager.workers.items()}
+        active_ids = [oid for oid, status in states.items() if status == "active"]
         now_s = time.time()
         for oid in active_ids:
             writer = self._recorders.get(oid)
@@ -135,8 +136,11 @@ class ROIWorkflow(Workflow):
                 self._recorders[oid] = (vw, now_s, path)
             self._recorders[oid][0].write(frame)
 
+        # finalize events only when worker is truly done
         for oid in list(self._recorders.keys()):
-            if oid not in active_ids:
+            status = states.get(oid)
+            should_close = status in {"inactive", "finished"} or status is None
+            if should_close:
                 vw, start_ts, path = self._recorders.pop(oid)
                 vw.release()
                 enqueue_dwell_event(

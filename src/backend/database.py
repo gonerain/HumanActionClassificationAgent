@@ -12,15 +12,15 @@ from typing import Iterator
 
 from contextlib import contextmanager
 
-from sqlalchemy import Float, Integer, String, create_engine, DateTime, text
-from sqlalchemy.orm import DeclarativeBase, Mapped, mapped_column, sessionmaker, Session
+from sqlalchemy import Float, Integer, String, create_engine, DateTime, text, inspect
+from sqlalchemy.orm import DeclarativeBase, Mapped, mapped_column, sessionmaker, Session, validates
 from datetime import datetime, timezone
 import threading
 import queue
 
 
 # PostgreSQL connection URL
-DB_URL = os.getenv("SP_DB_URL", "postgresql+psycopg2://postgres:postgres@localhost:5432/sglz")
+DB_URL = os.getenv("SP_DB_URL", "postgresql+psycopg2://postgres:000815@localhost:5432/sglz")
 
 engine = create_engine(DB_URL, future=True, pool_pre_ping=True)
 SessionLocal = sessionmaker(bind=engine, autoflush=False, expire_on_commit=False, class_=Session)
@@ -42,6 +42,32 @@ class DwellEvent(Base):
     start_ts: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
     end_ts: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
     video_path: Mapped[str] = mapped_column(String)
+
+    # Accept flexible inputs for timestamps; normalize to tz-aware UTC datetimes
+    @staticmethod
+    def _to_dt(value: object) -> datetime:
+        if isinstance(value, datetime):
+            if value.tzinfo is None:
+                return value.replace(tzinfo=timezone.utc)
+            return value.astimezone(timezone.utc)
+        if isinstance(value, (int, float)):
+            return datetime.fromtimestamp(float(value), tz=timezone.utc)
+        if isinstance(value, str):
+            # best-effort ISO 8601 parse
+            try:
+                from datetime import datetime as _dt
+
+                dt = _dt.fromisoformat(value)  # Python 3.11+ supports Z/offset
+                if dt.tzinfo is None:
+                    dt = dt.replace(tzinfo=timezone.utc)
+                return dt.astimezone(timezone.utc)
+            except Exception:
+                pass
+        raise TypeError(f"Unsupported timestamp type for DwellEvent: {type(value)!r}")
+
+    @validates("start_ts", "end_ts")
+    def _validate_ts(self, key: str, value: object) -> datetime:  # type: ignore[override]
+        return self._to_dt(value)
 
 
 class Camera(Base):
@@ -80,6 +106,13 @@ def init_db(url: str | None = None) -> None:
     # DDL
     Base.metadata.create_all(engine)
 
+    # Lightweight, idempotent migrations for existing installs
+    try:
+        _ensure_schema(engine)
+    except Exception:
+        # schema check is best-effort; continue startup
+        pass
+
     # Enable TimescaleDB and create hypertable (idempotent)
     with engine.begin() as conn:
         try:
@@ -90,6 +123,29 @@ def init_db(url: str | None = None) -> None:
             pass
 
     _start_db_worker()
+
+
+def _ensure_schema(engine) -> None:
+    """Ensure backward-compatible columns/indexes exist (idempotent)."""
+    insp = inspect(engine)
+    tables = insp.get_table_names()
+    if "dwell_events" not in tables:
+        return
+    cols = {c["name"] for c in insp.get_columns("dwell_events")}
+    stmts: list[str] = []
+    if "camera_id" not in cols:
+        # nullable to keep compatibility; apps can backfill
+        stmts.append('ALTER TABLE "dwell_events" ADD COLUMN "camera_id" INTEGER NULL')
+    # helpful composite index for common queries
+    stmts.append('CREATE INDEX IF NOT EXISTS "idx_dwell_camera_start" ON "dwell_events" ("camera_id", "start_ts")')
+    if stmts:
+        with engine.begin() as conn:
+            for sql in stmts:
+                try:
+                    conn.execute(text(sql))
+                except Exception:
+                    # ignore if not supported by dialect
+                    pass
 
 @contextmanager
 def get_session() -> Iterator[Session]:
