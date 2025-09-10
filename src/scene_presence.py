@@ -139,7 +139,7 @@ class ScenePresenceManager:
         if self.region is None:
             return True
         x1, y1, x2, y2 = bbox
-        foot_x, foot_y = (x1 + x2) // 2, y2  # 底边中心点
+        foot_x, foot_y = (x1 + x2) // 2, 0.75*max(y1,y2)+0.25*min(y1,y2)  # 底边中心点
         pts = np.array(self.region, dtype=np.int32)
         return cv2.pointPolygonTest(pts, (foot_x, foot_y), False) >= 0
 

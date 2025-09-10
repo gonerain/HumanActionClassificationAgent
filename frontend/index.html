@@ -1,0 +1,31 @@
+<!doctype html>
+<html lang="zh-CN">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>Presence Monitor</title>
+    <style>
+      html, body, #root { height: 100%; margin: 0; font-family: system-ui, -apple-system, Segoe UI, Roboto, Helvetica, Arial, sans-serif; }
+      .app { display: grid; grid-template-columns: 320px 1fr; gap: 12px; height: 100%; padding: 12px; box-sizing: border-box; background: #f6f7fb; }
+      .card { background: #fff; border: 1px solid #e5e7eb; border-radius: 8px; padding: 12px; }
+      .row { display: flex; gap: 8px; align-items: center; flex-wrap: wrap; }
+      .btn { padding: 6px 10px; border: 1px solid #d1d5db; background: #fff; border-radius: 6px; cursor: pointer; }
+      .btn.primary { background: #2563eb; color: #fff; border-color: #2563eb; }
+      .btn.danger { background: #dc2626; color: #fff; border-color: #dc2626; }
+      .list { max-height: calc(100vh - 200px); overflow: auto; border: 1px solid #e5e7eb; border-radius: 6px; padding: 6px; }
+      img.frame { max-width: 100%; border: 2px solid #e5e7eb; border-radius: 6px; }
+      .badge { display: inline-block; padding: 2px 6px; border-radius: 9999px; font-size: 12px; }
+      .ok { background: #10b981; color: #fff; }
+      .degraded { background: #f59e0b; color: #fff; }
+      .error { background: #ef4444; color: #fff; }
+      pre { white-space: pre-wrap; word-break: break-word; background: #f9fafb; border-radius: 6px; padding: 8px; }
+      label { display: block; font-size: 12px; color: #6b7280; margin-top: 8px; }
+      input, select { width: 100%; padding: 6px 8px; border: 1px solid #d1d5db; border-radius: 6px; box-sizing: border-box; }
+    </style>
+  </head>
+  <body>
+    <div id="root"></div>
+    <script type="module" src="/src/main.tsx"></script>
+  </body>
+  </html>
+

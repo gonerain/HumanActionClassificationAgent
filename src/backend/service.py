@@ -195,7 +195,7 @@ class VideoCaptureWorker(threading.Thread):
 
 
 class FrameProcessor:  # Backward-compatible alias over default workflow
-    def __init__(self, model_name: str = "yolo11s", conf: float = 0.5, region: List[Tuple[int, int]] | None = None) -> None:
+    def __init__(self, model_name: str = "yolo11l", conf: float = 0.5, region: List[Tuple[int, int]] | None = None) -> None:
         self._wf: Workflow = ROIWorkflow(model_name=model_name, conf=conf, region=region)
 
     def process(self, frame: np.ndarray) -> np.ndarray:

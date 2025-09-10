@@ -242,3 +242,22 @@ pytest
 ```
 
 提示：测试中部分依赖（如 `cv2`, `fastapi`）需按 `requirements.txt` 安装；如无真实摄像头，测试会注入 dummy VideoCapture。
+
+## 前端（初版）
+
+目录：`frontend/`
+
+- 技术栈：React + TypeScript + Vite
+- 功能：相机列表/选择、实时画面（WebSocket）、抓拍、驻留事件拉取、创建/删除相机
+- 开发启动：
+
+```bash
+cd frontend
+npm install
+npm run dev
+# 打开 http://localhost:5173 ，默认代理到后端 http://localhost:8000
+```
+
+- 构建：`npm run build`，产物位于 `frontend/dist/`
+
+说明：开发模式下 Vite 通过代理把 `/cameras/*`、`/dwell_events` 等请求转发给后端（含 WS）。生产部署可由 Nginx 或后端静态托管构建产物。
