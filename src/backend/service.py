@@ -37,12 +37,83 @@ except Exception:  # pragma: no cover
 # Placeholder for secondary-system integration
 
 def get_current_roll_status() -> str:
-    """Return current steel roll status.
+    """Simulate continuous galvanizing coil status.
 
-    TODO: Replace with real implementation (MES / PLC / HTTP).
+    Assumptions:
+    - Each coil takes 15 minutes to run.
+    - Line speed (example): 100 meters/minute.
+    - Continuous welding means we roll from one coil directly to the next.
+
+    States returned:
+    - "working": coil is being processed.
+    - "tail_welding": last minute of current coil (simulate tail welding window).
+    - "head_welding": first minute of next coil (simulate head welding window).
+    - "done": end-of-coil instant (very short period) – mostly theoretical here.
+
+    This function is a placeholder and purely time-based; replace with
+    integration to PLC/MES in production.
     """
 
-    return "ready"  # possible values: "empty", "ready", "working", "done"
+    # Tunables (can be promoted to config later)
+    minutes_per_coil = 15.0
+    speed_m_per_min = 500.0
+    head_tail_window_min = 1.0  # window around transitions
+
+    # Derive cycle timing
+    period_sec = minutes_per_coil * 60.0
+    now = time.time()
+    t_in_cycle = now % period_sec
+
+    # Compute remaining length (for potential future use)
+    minutes_into = t_in_cycle / 60.0
+    processed_m = minutes_into * speed_m_per_min
+    total_m = minutes_per_coil * speed_m_per_min
+    remaining_m = max(0.0, total_m - processed_m)
+    # We do not return meters here, but the calculation is kept for clarity/debugging.
+
+    # Determine state based on where we are in the cycle
+    if t_in_cycle < head_tail_window_min * 60.0:
+        return "head_welding"
+    if t_in_cycle > period_sec - head_tail_window_min * 60.0:
+        return "tail_welding"
+    # Middle of coil
+    return "working"
+
+
+def get_roll_cycle_metrics() -> Dict[str, float | int]:
+    """Return current coil metrics for the simulated line.
+
+    - coil_number: 1 or 2 (alternating every coil), cycling 1->2->1->2...
+    - processed_m: meters processed within the current coil
+    - remaining_m: meters remaining within the current coil
+    - minutes_into: minutes elapsed within the current coil
+    - minutes_remaining: minutes remaining within the current coil
+    - total_m: total meters per coil
+    """
+    minutes_per_coil = 15.0
+    speed_m_per_min = 100.0
+
+    period_sec = minutes_per_coil * 60.0
+    now = time.time()
+    # Which coil index in an infinite sequence (0-based)
+    coil_idx = int(now // period_sec)
+    # Map to 1 or 2 alternating
+    coil_number = 1 if (coil_idx % 2 == 0) else 2
+
+    t_in_cycle = now % period_sec
+    minutes_into = t_in_cycle / 60.0
+    total_m = minutes_per_coil * speed_m_per_min
+    processed_m = minutes_into * speed_m_per_min
+    remaining_m = max(0.0, total_m - processed_m)
+
+    return {
+        "coil_number": coil_number,
+        "processed_m": float(processed_m),
+        "remaining_m": float(remaining_m),
+        "minutes_into": float(minutes_into),
+        "minutes_remaining": float(minutes_per_coil - minutes_into),
+        "total_m": float(total_m),
+    }
 
 
 # ---------------------------------------------------------------------------
@@ -255,6 +326,21 @@ class InferenceWorker(threading.Thread):
         self._running = True
         self.latest_jpeg: Optional[bytes] = None
         self.latest_payload: Dict[str, Any] = {}
+        # Recording and on-duty tracking
+        self._rec_writer: Optional[cv2.VideoWriter] = None
+        self._rec_segment: str = "none"  # head, tail, none
+        self._rec_dir = Path("recordings")
+        self._last_tick: float = time.time()
+        self._coil_number: Optional[int] = None
+        self._on_duty_s: float = 0.0
+        self._on_duty_started_ts: Optional[float] = None
+        self._completion_recorded: bool = False
+        # Only accumulate within required work windows (head/tail 200m)
+        self._in_work_window: bool = False
+        # Sim config – keep in sync with get_roll_cycle_metrics
+        self._minutes_per_coil = 15.0
+        self._speed_m_per_min = 100.0
+        self._window_m = 200.0
 
     def run(self) -> None:  # pragma: no cover - background loop
         last = 0.0
@@ -273,13 +359,157 @@ class InferenceWorker(threading.Thread):
                 ok, buf = cv2.imencode(".jpg", processed, [int(cv2.IMWRITE_JPEG_QUALITY), 70])
                 if ok:
                     self.latest_jpeg = buf.tobytes()
-                self.latest_payload = self.processor.state()
+                state = self.processor.state()
+                # Compute roll metrics and status
+                roll = get_roll_cycle_metrics()
+                roll_status = get_current_roll_status()
+
+                # Handle coil change
+                coil_num = int(roll.get("coil_number", 1))
+                if self._coil_number is None:
+                    self._coil_number = coil_num
+                    self._on_duty_s = 0.0
+                    self._completion_recorded = False
+                    self._on_duty_started_ts = None
+                elif coil_num != self._coil_number:
+                    # Coil switched: reset counters and stop recording if any
+                    self._coil_number = coil_num
+                    self._on_duty_s = 0.0
+                    self._completion_recorded = False
+                    self._on_duty_started_ts = None
+                    self._in_work_window = False
+                    self._stop_recording()
+
+                # Update recording window (first/last 200m only)
+                processed_m = float(roll.get("processed_m", 0.0))
+                total_m = float(roll.get("total_m", self._minutes_per_coil * self._speed_m_per_min))
+                segment = "none"
+                if processed_m <= self._window_m:
+                    segment = "head"
+                elif processed_m >= max(0.0, total_m - self._window_m):
+                    segment = "tail"
+                # Open/close writer based on segment
+                if segment == "none":
+                    self._stop_recording()
+                else:
+                    self._ensure_recording(segment, frame)
+                # Determine if we are inside a valid work window
+                self._in_work_window = segment in ("head", "tail")
+
+                # Accumulate on-duty time using system time
+                dt = now - self._last_tick
+                self._last_tick = now
+                scene_active = bool(state.get("scene_active", False))
+                # Only accumulate on-duty time when within work window
+                if self._in_work_window and scene_active:
+                    if self._on_duty_started_ts is None:
+                        self._on_duty_started_ts = now
+                    self._on_duty_s += max(0.0, dt)
+                else:
+                    # Outside work time: reset accumulator and start timestamp
+                    self._on_duty_s = 0.0
+                    self._on_duty_started_ts = None
+
+                # If we left the work window, settle this work segment:
+                # decide completion based on whether accumulated >=30s within the just-finished window
+                if not self._in_work_window:
+                    if (self._on_duty_s >= 30.0) and (not self._completion_recorded):
+                        self._record_task_completion(coil_num=coil_num, processed_m=processed_m, total_m=total_m)
+                        self._completion_recorded = True
+                    # ensure cleared already (kept by the else-branch above)
+
+                # If recording, write frame
+                if self._rec_writer is not None:
+                    try:
+                        self._rec_writer.write(frame)
+                    except Exception:
+                        pass
+
+                # Publish payload
+                state["roll_status"] = roll_status
+                state["roll"] = roll
+                state["recording"] = self._rec_writer is not None
+                state["recording_segment"] = self._rec_segment
+                state["on_duty_seconds"] = round(self._on_duty_s, 3)
+                state["work_window"] = self._in_work_window
+                self.latest_payload = state
             except Exception:
                 time.sleep(0.05)
                 continue
 
     def stop(self) -> None:
         self._running = False
+        self._stop_recording()
+
+    def _ensure_recording(self, segment: str, frame: np.ndarray) -> None:
+        if self._rec_writer is not None and self._rec_segment == segment:
+            return
+        # If switching segments or was off, (re)open writer
+        self._stop_recording()
+        try:
+            self._rec_dir.mkdir(parents=True, exist_ok=True)
+        except Exception:
+            pass
+        # Derive size and fps
+        h, w = frame.shape[:2]
+        fourcc = cv2.VideoWriter_fourcc(*"mp4v")
+        fps = max(1.0, 1.0 / self.period)
+        timestamp = time.strftime("%Y%m%d%H%M%S", time.localtime())
+        # Camera id if available
+        cam_id = getattr(self.processor, "camera_id", None)
+        cam_part = f"cam{cam_id}" if cam_id is not None else "cam"
+        coil = self._coil_number or 0
+        filename = self._rec_dir / f"{cam_part}_coil{coil}_{segment}_{timestamp}.mp4"
+        try:
+            self._rec_writer = cv2.VideoWriter(str(filename), fourcc, fps, (w, h))
+            if self._rec_writer is not None and self._rec_writer.isOpened():
+                self._rec_segment = segment
+            else:
+                self._rec_writer = None
+                self._rec_segment = "none"
+        except Exception:
+            self._rec_writer = None
+            self._rec_segment = "none"
+
+    def _stop_recording(self) -> None:
+        if self._rec_writer is not None:
+            try:
+                self._rec_writer.release()
+            except Exception:
+                pass
+        self._rec_writer = None
+        self._rec_segment = "none"
+
+    def _record_task_completion(self, coil_num: int, processed_m: float, total_m: float) -> None:
+        # Persist a task completion event via existing DwellEvent
+        try:
+            with get_session() as sess:
+                # Build event
+                start_ts = self._on_duty_started_ts or time.time() - 30.0
+                end_ts = time.time()
+                duration = 30.0
+                # Fallbacks
+                cam_id = getattr(self.processor, "camera_id", None)
+                person_id = None
+                meta = {
+                    "type": "task_complete",
+                    "coil_number": coil_num,
+                    "processed_m": processed_m,
+                    "total_m": total_m,
+                    "policy": ">=30s_on_duty",
+                }
+                ev = DwellEvent(
+                    camera_id=cam_id,
+                    person_id=person_id,
+                    enter_ts=start_ts,
+                    leave_ts=end_ts,
+                    duration=duration,
+                    meta=meta,
+                )
+                sess.add(ev)
+        except Exception:
+            # Non-fatal; continue running
+            pass
 
 
 class CameraRuntime:
@@ -622,6 +852,9 @@ async def websocket_endpoint(ws: WebSocket, camera_id: int) -> None:
                 b64 = base64.b64encode(rt.infer.latest_jpeg).decode("ascii")
                 payload = dict(rt.infer.latest_payload)
                 payload["roll_status"] = get_current_roll_status()
+                payload.update({
+                    "roll": get_roll_cycle_metrics()
+                })
                 payload["frame"] = b64
                 health = rt.worker.get_health()
                 payload["health"] = health
